@@ -1,4 +1,6 @@
-export type UvPortTool = "transform" | "crop" | "brush" | "eraser" | "eyedropper";
+import type { DecalProjectionBasis, TextDecalStyle } from "../avatar/shared";
+
+export type UvPortTool = "transform" | "crop" | "brush" | "eraser" | "eyedropper" | "fill";
 
 export type UvPortPaintTarget = "image" | "mask";
 
@@ -10,6 +12,9 @@ export type UvPortLayerKind = "uv-layout" | "base" | "decal" | "draft";
 
 export type UvPortLayer = {
   id: string;
+  assetId?: string | null;
+  textStyle?: TextDecalStyle | null;
+  projection?: DecalProjectionBasis | null;
   kind: UvPortLayerKind;
   name: string;
   meshName: string | null;

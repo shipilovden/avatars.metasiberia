@@ -21,6 +21,64 @@ export function SettingsGearIcon() {
   );
 }
 
+export function PaintPaletteIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <defs>
+        <linearGradient id="paletteShell" x1="5" y1="4" x2="18" y2="20" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#ffd98a" />
+          <stop offset="1" stopColor="#f2b65b" />
+        </linearGradient>
+        <linearGradient id="paletteThumb" x1="10" y1="13" x2="18" y2="22" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#f0a94b" />
+          <stop offset="1" stopColor="#d9822b" />
+        </linearGradient>
+      </defs>
+      <path
+        d="M12 2.25C6.62 2.25 2.25 6.31 2.25 11.34c0 2.15.84 4.1 2.24 5.58 1.4 1.48 3.38 2.48 5.68 2.73.63.07 1.02.66.83 1.25l-.22.71a1.63 1.63 0 0 0 1.56 2.14h.98c4.62 0 8.43-3.39 8.43-7.55 0-1.77-.71-3.18-2.09-4.14-.72-.5-1.55-.77-2.49-.77h-1.72c-.98 0-1.78-.73-1.78-1.62 0-.24.06-.47.17-.69l.55-1.06c.33-.64.5-1.33.5-2.04 0-2-1.53-3.63-3.42-3.63Z"
+        fill="url(#paletteShell)"
+      />
+      <path
+        d="M17.4 13.2c1.03 0 1.86.8 1.86 1.8 0 .99-.83 1.8-1.86 1.8h-1.86c-.87 0-1.58.69-1.58 1.53 0 .25.07.5.18.71l.42.74c.21.37.31.79.31 1.2 0 .84-.41 1.59-1.03 2.06.14.02.29.03.44.03h.98c4.62 0 8.43-3.39 8.43-7.55 0-1.77-.71-3.18-2.09-4.14-.72-.5-1.55-.77-2.49-.77h-.82c-.18.55-.67.99-1.29 1.2Z"
+        fill="url(#paletteThumb)"
+        opacity="0.95"
+      />
+      <circle cx="7.1" cy="10.15" r="1.38" fill="#ff6b6b" />
+      <circle cx="10.25" cy="7.55" r="1.38" fill="#4dabf7" />
+      <circle cx="14.35" cy="7.7" r="1.38" fill="#ffd43b" />
+      <circle cx="16.95" cy="11" r="1.38" fill="#51cf66" />
+      <circle cx="17.85" cy="6.1" r="0.9" fill="#845ef7" />
+      <path
+        d="M8.15 4.85c1.16-.88 2.58-1.4 4.1-1.4"
+        fill="none"
+        stroke="#fff5d9"
+        strokeLinecap="round"
+        strokeWidth="1.2"
+        opacity="0.9"
+      />
+    </svg>
+  );
+}
+
+export function EyedropperIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M14.9 3.6a2.9 2.9 0 0 1 4.1 4.1l-1.2 1.2 1 1a1 1 0 0 1 0 1.4l-2.1 2.1a1 1 0 0 1-1.4 0l-.4-.4-6.8 6.8a2.6 2.6 0 0 1-1.44.73l-2.22.3a.9.9 0 0 1-1.01-1.01l.3-2.22a2.6 2.6 0 0 1 .73-1.44l6.8-6.8-.4-.4a1 1 0 0 1 0-1.4l2.1-2.1a1 1 0 0 1 1.4 0l1 1 1.2-1.2Z"
+        fill="currentColor"
+      />
+      <path
+        d="M6.4 17.8 13 11.2"
+        fill="none"
+        stroke="#ffffff"
+        strokeLinecap="round"
+        strokeWidth="1.4"
+      />
+      <circle cx="5.35" cy="18.65" r="1.55" fill="#7fe7ff" />
+    </svg>
+  );
+}
+
 export function PresetPreviewImage({ src, alt }: { src: string; alt: string }) {
   const [normalizedSrc, setNormalizedSrc] = useState(src);
 

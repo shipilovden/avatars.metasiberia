@@ -103,10 +103,25 @@ export type StickerTransform = {
   rotationDeg: number;
 };
 
+export type TextDecalStyle = {
+  text: string;
+  fontFamily: string;
+  fontSize: number;
+  color: string;
+};
+
+export type DecalProjectionBasis = {
+  position: [number, number, number];
+  axisU: [number, number, number];
+  axisV: [number, number, number];
+  normal?: [number, number, number];
+};
+
 export type DecalAsset = {
   id: string;
   fileName: string;
   textureUrl: string;
+  textStyle?: TextDecalStyle | null;
 };
 
 export const SLOT_NAMES = {
@@ -127,6 +142,84 @@ export const SLOT_NAMES = {
 } as const;
 
 export type MeshSlot = (typeof SLOT_NAMES)[keyof typeof SLOT_NAMES];
+const CANONICAL_MESH_SLOTS = new Set<MeshSlot>(Object.values(SLOT_NAMES) as MeshSlot[]);
+const MESH_SLOT_EXACT_ALIASES: Partial<Record<string, MeshSlot>> = {
+  "Mesh.009": SLOT_NAMES.top,
+  "Mesh.003": SLOT_NAMES.headwear,
+  Wolf3D_Skin: SLOT_NAMES.head,
+  "hair-60": SLOT_NAMES.hair,
+  low: SLOT_NAMES.hair,
+};
+
+export const normalizeMeshName = (value: string) =>
+  value.trim().replace(/\.+$/, "").replace(/\.\d+$/, "");
+
+export const getCanonicalMeshSlot = (meshName: string | null | undefined): MeshSlot | null => {
+  if (!meshName) {
+    return null;
+  }
+
+  const exactAlias = MESH_SLOT_EXACT_ALIASES[meshName];
+  if (exactAlias) {
+    return exactAlias;
+  }
+
+  if (CANONICAL_MESH_SLOTS.has(meshName as MeshSlot)) {
+    return meshName as MeshSlot;
+  }
+
+  const normalizedMeshName = normalizeMeshName(meshName);
+  if (CANONICAL_MESH_SLOTS.has(normalizedMeshName as MeshSlot)) {
+    return normalizedMeshName as MeshSlot;
+  }
+
+  const normalizedLower = normalizedMeshName.toLowerCase();
+  if (normalizedLower.startsWith("hair-") || normalizedLower.includes("wolf3d_hair")) {
+    return SLOT_NAMES.hair;
+  }
+  if (normalizedLower.startsWith("beard-") || normalizedLower.includes("wolf3d_beard")) {
+    return SLOT_NAMES.beard;
+  }
+  if (normalizedLower.includes("wolf3d_headwear")) {
+    return SLOT_NAMES.headwear;
+  }
+  if (normalizedLower.includes("wolf3d_facewear")) {
+    return SLOT_NAMES.facewear;
+  }
+  if (normalizedLower.includes("wolf3d_facemask")) {
+    return SLOT_NAMES.faceMask;
+  }
+  if (normalizedLower.includes("wolf3d_outfit_top")) {
+    return SLOT_NAMES.top;
+  }
+  if (normalizedLower.includes("wolf3d_outfit_bottom")) {
+    return SLOT_NAMES.bottom;
+  }
+  if (normalizedLower.includes("wolf3d_outfit_footwear")) {
+    return SLOT_NAMES.footwear;
+  }
+  if (normalizedLower.includes("wolf3d_body")) {
+    return SLOT_NAMES.body;
+  }
+  if (normalizedLower.includes("wolf3d_head") || normalizedLower === "wolf3d_skin") {
+    return SLOT_NAMES.head;
+  }
+  if (normalizedLower === "eyeleft" || normalizedLower === "wolf3d_eyeleft") {
+    return SLOT_NAMES.eyeLeft;
+  }
+  if (normalizedLower === "eyeright" || normalizedLower === "wolf3d_eyeright") {
+    return SLOT_NAMES.eyeRight;
+  }
+  if (normalizedLower.includes("wolf3d_teeth")) {
+    return SLOT_NAMES.teeth;
+  }
+  if (normalizedLower.includes("wolf3d_glasses")) {
+    return SLOT_NAMES.glasses;
+  }
+
+  return null;
+};
+
 export type MeshTintMode = "flat" | "eyebrows" | "lips";
 export type MeshTintEntry = { color: string; mode: MeshTintMode };
 export type MeshTintMap = Partial<Record<string, MeshTintEntry>>;
@@ -142,6 +235,8 @@ export type AppliedUvDecal = {
   scaleY: number;
   rotationDeg: number;
   textureUrl: string;
+  textStyle?: TextDecalStyle | null;
+  projection?: DecalProjectionBasis | null;
 };
 
 export type UiCopy = {
@@ -445,7 +540,10 @@ export const FACIAL_FEATURE_TYPES: SupportedType[] = [
 export const getAppliedUvDecalsForMesh = (
   appliedUvDecals: readonly AppliedUvDecal[],
   meshName: string
-) => appliedUvDecals.filter((entry) => entry.meshName === meshName);
+) => {
+  const targetSlot = getCanonicalMeshSlot(meshName) || meshName;
+  return appliedUvDecals.filter((entry) => (getCanonicalMeshSlot(entry.meshName) || entry.meshName) === targetSlot);
+};
 
 export const makeClientId = () =>
   typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"

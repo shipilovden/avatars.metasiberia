@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ThreeEvent } from "@react-three/fiber";
 import { useGLTF } from "@react-three/drei";
-import { Camera, Group, Mesh, Scene, Vector3, WebGLRenderer } from "three";
+import { Camera, Group, Mesh, Scene, Vector2, Vector3, WebGLRenderer } from "three";
 import type { PaintPanelProps } from "./components/PaintPanel";
 import type { UvDecalEditorProps } from "./components/UvDecalEditor";
 import { AssetSidebar } from "./components/avatar/AssetSidebar";
@@ -16,6 +16,7 @@ import {
 import {
   datasetAssets,
   FACIAL_FEATURE_TYPES,
+  getCanonicalMeshSlot,
   getAppliedUvDecalsForMesh,
   groups,
   HAIR_COLOR_SWATCHES,
@@ -32,12 +33,14 @@ import {
 import type {
   AppliedUvDecal,
   AssetRecord,
+  DecalProjectionBasis,
   DecalAsset,
   LocalItem,
   MeshSlot,
   MeshTintMap,
   StickerTransform,
   SupportedType,
+  TextDecalStyle,
   UiGender,
   UiLocale,
 } from "./components/avatar/shared";
@@ -72,26 +75,6 @@ const SCENE_UV_SLOT_ORDER: readonly MeshSlot[] = [
   SLOT_NAMES.glasses,
 ];
 
-const MESH_NAME_TO_SCENE_UV_SLOT: Partial<Record<string, MeshSlot>> = {
-  [SLOT_NAMES.body]: SLOT_NAMES.body,
-  [SLOT_NAMES.head]: SLOT_NAMES.head,
-  [SLOT_NAMES.teeth]: SLOT_NAMES.teeth,
-  [SLOT_NAMES.eyeLeft]: SLOT_NAMES.eyeLeft,
-  [SLOT_NAMES.eyeRight]: SLOT_NAMES.eyeRight,
-  [SLOT_NAMES.top]: SLOT_NAMES.top,
-  [SLOT_NAMES.bottom]: SLOT_NAMES.bottom,
-  [SLOT_NAMES.footwear]: SLOT_NAMES.footwear,
-  [SLOT_NAMES.hair]: SLOT_NAMES.hair,
-  "Wolf3D_Hair.001": SLOT_NAMES.hair,
-  "hair-60": SLOT_NAMES.hair,
-  low: SLOT_NAMES.hair,
-  [SLOT_NAMES.beard]: SLOT_NAMES.beard,
-  [SLOT_NAMES.headwear]: SLOT_NAMES.headwear,
-  [SLOT_NAMES.facewear]: SLOT_NAMES.facewear,
-  [SLOT_NAMES.faceMask]: SLOT_NAMES.faceMask,
-  [SLOT_NAMES.glasses]: SLOT_NAMES.glasses,
-};
-
 const TYPE_TO_PREFERRED_UV_SLOT: Partial<Record<SupportedType, MeshSlot>> = {
   top: SLOT_NAMES.top,
   bottom: SLOT_NAMES.bottom,
@@ -106,7 +89,34 @@ const TYPE_TO_PREFERRED_UV_SLOT: Partial<Record<SupportedType, MeshSlot>> = {
 };
 
 const getSceneUvSlotForMeshName = (meshName: string | null | undefined): MeshSlot | null =>
-  meshName ? MESH_NAME_TO_SCENE_UV_SLOT[meshName] || null : null;
+  getCanonicalMeshSlot(meshName);
+
+const getDefaultDecalScaleForSlot = (slot: MeshSlot | null | undefined) => {
+  if (slot === SLOT_NAMES.body) {
+    return 0.04;
+  }
+
+  if (slot === SLOT_NAMES.head || slot === SLOT_NAMES.faceMask) {
+    return 0.2;
+  }
+
+  return 0.35;
+};
+
+const getInitialDecalScale = ({
+  slot,
+  textStyle,
+}: {
+  slot: MeshSlot | null | undefined;
+  textStyle?: TextDecalStyle | null;
+}) => {
+  const baseScale = getDefaultDecalScaleForSlot(slot);
+  if (slot === SLOT_NAMES.body && textStyle) {
+    return Math.max(baseScale, 0.085);
+  }
+
+  return baseScale;
+};
 
 const isSameUvPlacement = (
   left: Pick<AppliedUvDecal, "meshName" | "textureUrl" | "uv" | "scale" | "scaleX" | "scaleY" | "rotationDeg">,
@@ -185,6 +195,7 @@ type AvatarSessionState = {
   uvTextureSlot: MeshSlot | null;
   appliedUvTextures: AppliedUvDecal[];
   paintedBasePreviewBySlot: Partial<Record<MeshSlot, string>>;
+  paintedBaseFileNameBySlot: Partial<Record<MeshSlot, string>>;
   decalTransform: StickerTransform;
   replaceScale: number;
   replaceScaleX: number;
@@ -215,6 +226,42 @@ const isTuple3 = (value: unknown): value is [number, number, number] =>
   value.length === 3 &&
   value.every((entry) => isFiniteNumber(entry));
 
+const sanitizeTextDecalStyle = (value: unknown): TextDecalStyle | null => {
+  if (
+    !isRecord(value) ||
+    typeof value.text !== "string" ||
+    typeof value.fontFamily !== "string" ||
+    !isFiniteNumber(value.fontSize) ||
+    typeof value.color !== "string"
+  ) {
+    return null;
+  }
+
+  return {
+    text: value.text,
+    fontFamily: value.fontFamily,
+    fontSize: value.fontSize,
+    color: value.color,
+  };
+};
+
+const sanitizeDecalProjectionBasis = (value: unknown): DecalProjectionBasis | null => {
+  if (!isRecord(value) || !isTuple3(value.position) || !isTuple3(value.axisU) || !isTuple3(value.axisV)) {
+    return null;
+  }
+
+  return {
+    position: [value.position[0], value.position[1], value.position[2]],
+    axisU: [value.axisU[0], value.axisU[1], value.axisU[2]],
+    axisV: [value.axisV[0], value.axisV[1], value.axisV[2]],
+    ...(isTuple3(value.normal)
+      ? {
+          normal: [value.normal[0], value.normal[1], value.normal[2]] as [number, number, number],
+        }
+      : {}),
+  };
+};
+
 const isSupportedTypeValue = (value: unknown): value is SupportedType =>
   typeof value === "string" && VALID_SUPPORTED_TYPES.has(value as SupportedType);
 
@@ -244,6 +291,7 @@ const sanitizeDecalAssets = (value: unknown): DecalAsset[] =>
           id: entry.id,
           fileName: entry.fileName,
           textureUrl: entry.textureUrl,
+          textStyle: sanitizeTextDecalStyle(entry.textStyle),
         }))
     : [];
 
@@ -275,6 +323,8 @@ const sanitizeAppliedUvDecals = (value: unknown): AppliedUvDecal[] =>
           scaleY: entry.scaleY,
           rotationDeg: entry.rotationDeg,
           textureUrl: entry.textureUrl,
+          textStyle: sanitizeTextDecalStyle(entry.textStyle),
+          projection: sanitizeDecalProjectionBasis(entry.projection),
         }))
     : [];
 
@@ -305,6 +355,22 @@ const sanitizePaintedBasePreviewBySlot = (
   for (const [slot, textureUrl] of Object.entries(value)) {
     if (isMeshSlotValue(slot) && typeof textureUrl === "string") {
       next[slot] = textureUrl;
+    }
+  }
+  return next;
+};
+
+const sanitizePaintedBaseFileNameBySlot = (
+  value: unknown
+): Partial<Record<MeshSlot, string>> => {
+  if (!isRecord(value)) {
+    return {};
+  }
+
+  const next: Partial<Record<MeshSlot, string>> = {};
+  for (const [slot, fileName] of Object.entries(value)) {
+    if (isMeshSlotValue(slot) && typeof fileName === "string") {
+      next[slot] = fileName;
     }
   }
   return next;
@@ -451,6 +517,9 @@ const readAvatarSession = (): Partial<AvatarSessionState> | null => {
     next.paintedBasePreviewBySlot = sanitizePaintedBasePreviewBySlot(
       parsed.paintedBasePreviewBySlot
     );
+    next.paintedBaseFileNameBySlot = sanitizePaintedBaseFileNameBySlot(
+      parsed.paintedBaseFileNameBySlot
+    );
 
     const restoredTransform = sanitizeStickerTransform(parsed.decalTransform);
     if (restoredTransform) {
@@ -511,6 +580,9 @@ function App() {
     restoredSession?.isAvatarStatic ?? false
   );
   const [stickerTargetMesh, setStickerTargetMesh] = useState<Mesh | null>(null);
+  const [decalProjectionBasis, setDecalProjectionBasis] = useState<DecalProjectionBasis | null>(
+    null
+  );
   const [uvDecalDraftUv, setUvDecalDraftUv] = useState<[number, number]>(
     restoredSession?.uvDecalDraftUv || [0.5, 0.5]
   );
@@ -532,6 +604,9 @@ function App() {
   const [paintedBasePreviewBySlot, setPaintedBasePreviewBySlot] = useState<
     Partial<Record<MeshSlot, string>>
   >(restoredSession?.paintedBasePreviewBySlot || {});
+  const [paintedBaseFileNameBySlot, setPaintedBaseFileNameBySlot] = useState<
+    Partial<Record<MeshSlot, string>>
+  >(restoredSession?.paintedBaseFileNameBySlot || {});
   const [decalTransform, setDecalTransform] = useState<StickerTransform>({
     position: restoredSession?.decalTransform?.position || [0, 0.35, 0.25],
     normal: restoredSession?.decalTransform?.normal || [0, 0, 1],
@@ -541,7 +616,7 @@ function App() {
     scaleY: restoredSession?.decalTransform?.scaleY ?? 1,
     rotationDeg: restoredSession?.decalTransform?.rotationDeg ?? 0,
   });
-  const [replaceScale, setReplaceScale] = useState(restoredSession?.replaceScale ?? 0.35);
+  const [replaceScale, setReplaceScale] = useState(restoredSession?.replaceScale ?? 1);
   const [replaceScaleX, setReplaceScaleX] = useState(restoredSession?.replaceScaleX ?? 1);
   const [replaceScaleY, setReplaceScaleY] = useState(restoredSession?.replaceScaleY ?? 1);
   const [replaceRotationDeg, setReplaceRotationDeg] = useState(
@@ -618,6 +693,7 @@ function App() {
       uvTextureSlot,
       appliedUvTextures,
       paintedBasePreviewBySlot,
+      paintedBaseFileNameBySlot,
       decalTransform,
       replaceScale,
       replaceScaleX,
@@ -642,6 +718,7 @@ function App() {
       isPaintPanelOpen,
       isStickerEditMode,
       locale,
+      paintedBaseFileNameBySlot,
       paintedBasePreviewBySlot,
       replaceFileName,
       replaceRotationDeg,
@@ -676,11 +753,10 @@ function App() {
       null
     );
   }, [decalAssets, selectedDecalAssetId]);
-  const decalTextureUrl = selectedDecalAsset
-    ? draftDecalTextureUrlState === undefined
-      ? selectedDecalAsset.textureUrl
-      : draftDecalTextureUrlState
-    : null;
+  const decalTextureUrl =
+    draftDecalTextureUrlState !== undefined
+      ? draftDecalTextureUrlState
+      : selectedDecalAsset?.textureUrl || null;
   const decalFiles = useMemo(
     () =>
       decalAssets.map((asset) => ({
@@ -716,23 +792,44 @@ function App() {
   }, [selectedDecalAssetId]);
 
   useEffect(() => {
-    if (selectedDecalAsset) {
+    if (
+      draftDecalTextureUrlState !== undefined ||
+      !selectedDecalAssetId ||
+      !uvDecalSlot ||
+      isStickerEditMode
+    ) {
+      return;
+    }
+
+    const hasAppliedLayerForSelectedAsset = getAppliedUvDecalsForMesh(
+      appliedUvDecals,
+      uvDecalSlot
+    ).some((entry) => entry.assetId === selectedDecalAssetId);
+
+    if (!hasAppliedLayerForSelectedAsset) {
+      return;
+    }
+
+    setDraftDecalTextureUrlState(null);
+  }, [
+    appliedUvDecals,
+    draftDecalTextureUrlState,
+    isStickerEditMode,
+    selectedDecalAssetId,
+    uvDecalSlot,
+  ]);
+
+  useEffect(() => {
+    if (selectedDecalAsset || typeof draftDecalTextureUrlState === "string") {
       return;
     }
 
     setDraftDecalTextureUrlState(undefined);
+    setDecalProjectionBasis(null);
     setIsStickerEditMode(false);
     setStickerTargetMesh(null);
     setUvEditorMode((current) => (current === "decal" ? null : current));
-  }, [selectedDecalAsset]);
-
-  useEffect(() => {
-    if (replaceTextureUrlState) {
-      return;
-    }
-
-    setUvEditorMode((current) => (current === "texture" ? null : current));
-  }, [replaceTextureUrlState]);
+  }, [draftDecalTextureUrlState, selectedDecalAsset]);
 
   useEffect(() => {
     setStickerTargetMesh(null);
@@ -740,6 +837,7 @@ function App() {
 
   useEffect(() => {
     setPaintedBasePreviewBySlot({});
+    setPaintedBaseFileNameBySlot({});
   }, [selectedGender, selectedPresetId]);
 
   const resetPresetVisualOverrides = useCallback(() => {
@@ -751,6 +849,7 @@ function App() {
     setAppliedUvDecals([]);
     setAppliedUvTextures([]);
     setPaintedBasePreviewBySlot({});
+    setPaintedBaseFileNameBySlot({});
     setDraftDecalTextureUrlState(undefined);
     setReplaceTextureUrlState(null);
     setReplaceFileName("");
@@ -768,7 +867,7 @@ function App() {
       scaleY: 1,
       rotationDeg: 0,
     });
-    setReplaceScale(0.35);
+    setReplaceScale(1);
     setReplaceScaleX(1);
     setReplaceScaleY(1);
     setReplaceRotationDeg(0);
@@ -1142,10 +1241,149 @@ function App() {
     };
   }, [activeType, capabilityByAsset, selectedByType, selectedLocalByType, selectedPreset]);
 
-  const syncUvSlotFromMesh = (mesh: Mesh | null) => {
+  const pendingPickedDecalUvRef = useRef<{ slot: MeshSlot; uv: [number, number] } | null>(null);
+  const pendingPickedTextureUvRef = useRef<{ slot: MeshSlot; uv: [number, number] } | null>(null);
+  const pendingPickedDecalProjectionRef = useRef<{
+    slot: MeshSlot;
+    projection: DecalProjectionBasis | null;
+  } | null>(null);
+
+  const consumeLatestPickedDecalPlacement = useCallback(
+    (
+      fallbackSlot: MeshSlot,
+      fallbackUv: [number, number],
+      fallbackProjection: DecalProjectionBasis | null
+    ) => {
+      const pending = pendingPickedDecalUvRef.current;
+      if (pending) {
+        const pendingProjection =
+          pendingPickedDecalProjectionRef.current &&
+          pendingPickedDecalProjectionRef.current.slot === pending.slot
+            ? pendingPickedDecalProjectionRef.current.projection
+            : null;
+        pendingPickedDecalUvRef.current = null;
+        pendingPickedDecalProjectionRef.current = null;
+        return {
+          slot: pending.slot,
+          uv: pending.uv,
+          projection: pendingProjection,
+        };
+      }
+
+      return {
+        slot: fallbackSlot,
+        uv: fallbackUv,
+        projection: fallbackProjection,
+      };
+    },
+    []
+  );
+
+  const computeDecalProjectionBasis = useCallback(
+    (
+      mesh: Mesh,
+      surfaceHit: {
+        face?: { a: number; b: number; c: number; normal: Vector3 } | null;
+        point: Vector3;
+      }
+    ): DecalProjectionBasis | null => {
+      const geometry = mesh.geometry;
+      const face = surfaceHit.face;
+      if (!geometry || !("getAttribute" in geometry) || !face) {
+        return null;
+      }
+
+      const uvAttribute = geometry.getAttribute("uv");
+      if (
+        !uvAttribute ||
+        typeof uvAttribute.getX !== "function" ||
+        typeof uvAttribute.getY !== "function"
+      ) {
+        return null;
+      }
+
+      const positionA = mesh.getVertexPosition(face.a, new Vector3());
+      const positionB = mesh.getVertexPosition(face.b, new Vector3());
+      const positionC = mesh.getVertexPosition(face.c, new Vector3());
+      mesh.localToWorld(positionA);
+      mesh.localToWorld(positionB);
+      mesh.localToWorld(positionC);
+
+      const uvA = new Vector2(uvAttribute.getX(face.a), uvAttribute.getY(face.a));
+      const uvB = new Vector2(uvAttribute.getX(face.b), uvAttribute.getY(face.b));
+      const uvC = new Vector2(uvAttribute.getX(face.c), uvAttribute.getY(face.c));
+      const deltaUvAB = uvB.clone().sub(uvA);
+      const deltaUvAC = uvC.clone().sub(uvA);
+      const determinant = deltaUvAB.x * deltaUvAC.y - deltaUvAC.x * deltaUvAB.y;
+      if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-6) {
+        return null;
+      }
+
+      const edgeAB = positionB.clone().sub(positionA);
+      const edgeAC = positionC.clone().sub(positionA);
+      const inverseDeterminant = 1 / determinant;
+      const axisU = edgeAB
+        .clone()
+        .multiplyScalar(deltaUvAC.y)
+        .addScaledVector(edgeAC, -deltaUvAB.y)
+        .multiplyScalar(inverseDeterminant);
+      const axisV = edgeAC
+        .clone()
+        .multiplyScalar(deltaUvAB.x)
+        .addScaledVector(edgeAB, -deltaUvAC.x)
+        .multiplyScalar(inverseDeterminant);
+
+      if (axisU.lengthSq() < 1e-10 || axisV.lengthSq() < 1e-10) {
+        return null;
+      }
+
+      const worldNormal = face.normal.clone().transformDirection(mesh.matrixWorld).normalize();
+
+      return {
+        position: [surfaceHit.point.x, surfaceHit.point.y, surfaceHit.point.z],
+        axisU: [axisU.x, axisU.y, axisU.z],
+        axisV: [axisV.x, axisV.y, axisV.z],
+        normal: [worldNormal.x, worldNormal.y, worldNormal.z],
+      };
+    },
+    []
+  );
+
+  const syncUvSlotFromMesh = (
+    mesh: Mesh | null,
+    pickedUv?: [number, number] | null,
+    pickedProjection?: DecalProjectionBasis | null
+  ) => {
     const pickedSlot = getSceneUvSlotForMeshName(mesh?.name);
     if (!pickedSlot) {
       return;
+    }
+
+    if (pickedUv) {
+      pendingPickedDecalUvRef.current = {
+        slot: pickedSlot,
+        uv: pickedUv,
+      };
+      pendingPickedTextureUvRef.current = {
+        slot: pickedSlot,
+        uv: pickedUv,
+      };
+      setUvDecalDraftUv(pickedUv);
+      setUvTextureDraftUv(pickedUv);
+    }
+
+    if (pickedProjection) {
+      pendingPickedDecalProjectionRef.current = {
+        slot: pickedSlot,
+        projection: pickedProjection,
+      };
+      setDecalProjectionBasis(pickedProjection);
+    } else if (pickedUv) {
+      pendingPickedDecalProjectionRef.current = {
+        slot: pickedSlot,
+        projection: null,
+      };
+      setDecalProjectionBasis(null);
     }
 
     setUvDecalSlot(pickedSlot);
@@ -1157,8 +1395,8 @@ function App() {
     lockedMesh: Mesh | null = null
   ) => {
     const avatarSurfaceHits = event.intersections.filter((hit) => {
-      const data = (hit.object as { userData?: Record<string, unknown> }).userData;
-      return Boolean(data?.avatarSurface);
+      const object = hit.object as { visible?: boolean; userData?: Record<string, unknown> };
+      return object.visible !== false && Boolean(object.userData?.avatarSurface);
     });
     const surfaceHit = lockedMesh
       ? avatarSurfaceHits.find((hit) => hit.object === lockedMesh) || null
@@ -1173,15 +1411,68 @@ function App() {
       ? surfaceHit.face.normal.clone().transformDirection(hitObject.matrixWorld).normalize()
       : new Vector3(0, 0, 1);
 
+    const pickedUv = surfaceHit.uv ? ([surfaceHit.uv.x, surfaceHit.uv.y] as [number, number]) : null;
+    const projectionBasis = computeDecalProjectionBasis(hitObject, surfaceHit);
+
     setDecalTransform((current) => ({
       ...current,
       position: [surfaceHit.point.x, surfaceHit.point.y, surfaceHit.point.z],
       normal: [worldNormal.x, worldNormal.y, worldNormal.z],
-      uv: surfaceHit.uv ? [surfaceHit.uv.x, surfaceHit.uv.y] : current.uv,
+      uv: pickedUv || current.uv,
     }));
+    setDecalProjectionBasis(projectionBasis);
     setStickerTargetMesh(hitObject);
-    syncUvSlotFromMesh(hitObject);
+    syncUvSlotFromMesh(hitObject, pickedUv, projectionBasis);
   };
+
+  const appendAppliedDecalLayer = useCallback(
+    ({
+      assetId,
+      fileName,
+      textureUrl,
+      meshName,
+      uv,
+      scale,
+      scaleX,
+      scaleY,
+      rotationDeg,
+      textStyle,
+      projection,
+    }: {
+      assetId?: string | null;
+      fileName?: string;
+      textureUrl: string;
+      meshName: MeshSlot;
+      uv: [number, number];
+      scale: number;
+      scaleX: number;
+      scaleY: number;
+      rotationDeg: number;
+      textStyle?: TextDecalStyle | null;
+      projection?: DecalProjectionBasis | null;
+    }) => {
+      const nextLayerId = makeClientId();
+      setAppliedUvDecals((current) => [
+        ...current,
+        {
+          id: nextLayerId,
+          assetId: assetId || `generated:${nextLayerId}`,
+          fileName: fileName || "decal",
+          meshName,
+          uv,
+          scale,
+          scaleX,
+          scaleY,
+          rotationDeg,
+          textureUrl,
+          textStyle: textStyle || null,
+          projection: projection || null,
+        },
+      ]);
+      return nextLayerId;
+    },
+    []
+  );
 
   const handleUploadByTarget = (file: File | null, target: "decal" | "replace") => {
     if (!file) {
@@ -1200,13 +1491,44 @@ function App() {
           id: makeClientId(),
           fileName: file.name,
           textureUrl: result,
+          textStyle: null,
         };
+        const fallbackSlot = uvDecalSlot || TYPE_TO_PREFERRED_UV_SLOT[activeType] || SLOT_NAMES.top;
+        const { slot: nextSlot, uv: nextUv, projection: nextProjection } = consumeLatestPickedDecalPlacement(
+          fallbackSlot,
+          uvDecalDraftUv,
+          decalProjectionBasis
+        );
         setDecalAssets((current) => [...current, nextAsset]);
-        setSelectedDecalAssetId(nextAsset.id);
-        setDraftDecalTextureUrlState(undefined);
-        setIsStickerEditMode(true);
+        selectDecalAssetWithoutDraft(nextAsset.id);
+        setUvDecalSlot(nextSlot);
+        const nextScale = getInitialDecalScale({ slot: nextSlot, textStyle: null });
+        appendAppliedDecalLayer({
+          assetId: nextAsset.id,
+          fileName: nextAsset.fileName,
+          textureUrl: nextAsset.textureUrl,
+          meshName: nextSlot,
+          uv: nextUv,
+          scale: nextScale,
+          scaleX: 1,
+          scaleY: 1,
+          rotationDeg: 0,
+          projection: nextProjection,
+        });
+        setUvDecalDraftUv(nextUv);
+        setDecalTransform((current) => ({
+          ...current,
+          uv: nextUv,
+          scale: nextScale,
+          scaleX: 1,
+          scaleY: 1,
+          rotationDeg: 0,
+        }));
+        setIsStickerEditMode(false);
         setStickerTargetMesh(null);
       } else {
+        const nextSlot = uvTextureSlot || TYPE_TO_PREFERRED_UV_SLOT[activeType] || SLOT_NAMES.top;
+        const nextLayerId = makeClientId();
         setReplaceTextureUrlState((current) => {
           if (current && current.startsWith("blob:")) {
             URL.revokeObjectURL(current);
@@ -1214,9 +1536,42 @@ function App() {
           return result;
         });
         setReplaceFileName(file.name);
-        setAppliedUvTextures([]);
+        setUvTextureSlot(nextSlot);
+        setAppliedUvTextures((current) => [
+          ...current.filter((entry) => entry.meshName !== nextSlot),
+          {
+            id: current.find((entry) => entry.meshName === nextSlot)?.id || nextLayerId,
+            assetId: `texture:${nextSlot}`,
+            fileName: file.name,
+            meshName: nextSlot,
+            uv: [0.5, 0.5],
+            scale: 1,
+            scaleX: 1,
+            scaleY: 1,
+            rotationDeg: 0,
+            textureUrl: result,
+          },
+        ]);
+        setPaintedBasePreviewBySlot((current) => {
+          if (!current[nextSlot]) {
+            return current;
+          }
+
+          const next = { ...current };
+          delete next[nextSlot];
+          return next;
+        });
+        setPaintedBaseFileNameBySlot((current) => {
+          if (!current[nextSlot]) {
+            return current;
+          }
+
+          const next = { ...current };
+          delete next[nextSlot];
+          return next;
+        });
         setUvTextureDraftUv([0.5, 0.5]);
-        setReplaceScale(0.35);
+        setReplaceScale(1);
         setReplaceScaleX(1);
         setReplaceScaleY(1);
         setReplaceRotationDeg(0);
@@ -1243,10 +1598,273 @@ function App() {
     setAppliedUvDecals((current) => current.filter((entry) => entry.assetId !== assetId));
     setSelectedDecalAssetId(nextSelectedId);
     if (selectedDecalAssetId === assetId) {
+      setDecalProjectionBasis(null);
       setStickerTargetMesh(null);
       setIsStickerEditMode(Boolean(nextSelectedId));
     }
   };
+
+  const selectDecalAssetWithoutDraft = useCallback((assetId: string | null) => {
+    skipInitialDraftResetRef.current = true;
+    setSelectedDecalAssetId(assetId);
+    setDraftDecalTextureUrlState(null);
+  }, []);
+
+  const createGeneratedDecalAsset = useCallback(
+    ({
+      fileName,
+      textureUrl,
+      textStyle,
+      meshName,
+      uv,
+      scale,
+      scaleX,
+      scaleY,
+      rotationDeg,
+      projection,
+    }: {
+      fileName: string;
+      textureUrl: string;
+      textStyle?: TextDecalStyle | null;
+      meshName?: string;
+      uv?: [number, number];
+      scale?: number;
+      scaleX?: number;
+      scaleY?: number;
+      rotationDeg?: number;
+      projection?: DecalProjectionBasis | null;
+    }) => {
+      const fallbackSlot = uvDecalSlot || TYPE_TO_PREFERRED_UV_SLOT[activeType] || SLOT_NAMES.top;
+      const explicitSlot = meshName ? (meshName as MeshSlot) : null;
+      const pickedPlacement = explicitSlot
+        ? null
+        : consumeLatestPickedDecalPlacement(fallbackSlot, uvDecalDraftUv, decalProjectionBasis);
+      const nextSlot = explicitSlot || pickedPlacement?.slot || fallbackSlot;
+      const nextUv = uv || pickedPlacement?.uv || uvDecalDraftUv;
+      const nextProjection =
+        projection !== undefined ? projection : explicitSlot ? null : pickedPlacement?.projection || null;
+      const nextAsset: DecalAsset = {
+        id: makeClientId(),
+        fileName,
+        textureUrl,
+        textStyle: textStyle || null,
+      };
+      const nextScale =
+        typeof scale === "number"
+          ? scale
+          : getInitialDecalScale({ slot: nextSlot, textStyle: nextAsset.textStyle });
+      const nextScaleX = typeof scaleX === "number" ? scaleX : 1;
+      const nextScaleY = typeof scaleY === "number" ? scaleY : 1;
+      const nextRotationDeg = typeof rotationDeg === "number" ? rotationDeg : 0;
+      const nextLayerId = appendAppliedDecalLayer({
+        assetId: nextAsset.id,
+        fileName: nextAsset.fileName,
+        textureUrl: nextAsset.textureUrl,
+        meshName: nextSlot,
+        uv: nextUv,
+        scale: nextScale,
+        scaleX: nextScaleX,
+        scaleY: nextScaleY,
+        rotationDeg: nextRotationDeg,
+        textStyle: nextAsset.textStyle,
+        projection: nextProjection,
+      });
+
+      setDecalAssets((current) => [...current, nextAsset]);
+      selectDecalAssetWithoutDraft(nextAsset.id);
+      setUvDecalSlot(nextSlot);
+      setUvDecalDraftUv(nextUv);
+      setDecalTransform((current) => ({
+        ...current,
+        uv: nextUv,
+        scale: nextScale,
+        scaleX: nextScaleX,
+        scaleY: nextScaleY,
+        rotationDeg: nextRotationDeg,
+      }));
+      setIsStickerEditMode(false);
+      setStickerTargetMesh(null);
+      return {
+        assetId: nextAsset.id,
+        layerId: nextLayerId,
+      };
+    },
+    [
+      activeType,
+      appendAppliedDecalLayer,
+      consumeLatestPickedDecalPlacement,
+      decalProjectionBasis,
+      uvDecalDraftUv,
+      uvDecalSlot,
+    ]
+  );
+
+  const createDecalLayer = useCallback(
+    ({
+      assetId,
+      fileName,
+      textureUrl,
+      meshName,
+      uv,
+      scale,
+      scaleX,
+      scaleY,
+      rotationDeg,
+      textStyle,
+      projection,
+    }: {
+      assetId?: string | null;
+      fileName?: string;
+      textureUrl: string;
+      meshName: string;
+      uv: [number, number];
+      scale: number;
+      scaleX: number;
+      scaleY: number;
+      rotationDeg: number;
+      textStyle?: TextDecalStyle | null;
+      projection?: DecalProjectionBasis | null;
+    }) => {
+      const nextLayerId = appendAppliedDecalLayer({
+        assetId,
+        fileName,
+        textureUrl,
+        meshName: meshName as MeshSlot,
+        uv,
+        scale,
+        scaleX,
+        scaleY,
+        rotationDeg,
+        textStyle,
+        projection,
+      });
+
+      setUvDecalSlot(meshName as MeshSlot);
+      if (assetId) {
+        selectDecalAssetWithoutDraft(assetId);
+      }
+      setIsStickerEditMode(false);
+      setStickerTargetMesh(null);
+      return nextLayerId;
+    },
+    [appendAppliedDecalLayer, selectDecalAssetWithoutDraft]
+  );
+
+  const updateAppliedDecalLayer = useCallback(
+    (
+      layerId: string,
+        patch: Partial<{
+          fileName: string;
+          textureUrl: string | null;
+          uv: [number, number];
+          scale: number;
+          scaleX: number;
+          scaleY: number;
+          rotationDeg: number;
+          textStyle: TextDecalStyle | null;
+        }>
+    ) => {
+      let assetIdToUpdate: string | null = null;
+      setAppliedUvDecals((current) =>
+        current.map((entry) => {
+          if (entry.id !== layerId) {
+            return entry;
+          }
+
+          assetIdToUpdate = entry.assetId;
+          return {
+            ...entry,
+            ...(typeof patch.fileName === "string" ? { fileName: patch.fileName } : {}),
+            ...(typeof patch.textureUrl === "string" ? { textureUrl: patch.textureUrl } : {}),
+            ...(patch.uv
+              ? {
+                  uv: [patch.uv[0], patch.uv[1]] as [number, number],
+                  projection: null,
+                }
+              : {}),
+            ...(typeof patch.scale === "number" ? { scale: patch.scale } : {}),
+            ...(typeof patch.scaleX === "number" ? { scaleX: patch.scaleX } : {}),
+            ...(typeof patch.scaleY === "number" ? { scaleY: patch.scaleY } : {}),
+            ...(typeof patch.rotationDeg === "number" ? { rotationDeg: patch.rotationDeg } : {}),
+            ...("textStyle" in patch ? { textStyle: patch.textStyle || null } : {}),
+          };
+        })
+      );
+      if (assetIdToUpdate) {
+        setDecalAssets((current) =>
+          current.map((asset) =>
+            asset.id === assetIdToUpdate
+              ? {
+                  ...asset,
+                  ...(typeof patch.fileName === "string" ? { fileName: patch.fileName } : {}),
+                  ...(typeof patch.textureUrl === "string" ? { textureUrl: patch.textureUrl } : {}),
+                  ...("textStyle" in patch ? { textStyle: patch.textStyle || null } : {}),
+                }
+              : asset
+          )
+        );
+      }
+    },
+    []
+  );
+
+  const moveAppliedDecalLayer = useCallback((layerId: string, direction: "up" | "down") => {
+    setAppliedUvDecals((current) => {
+      const layer = current.find((entry) => entry.id === layerId);
+      if (!layer) {
+        return current;
+      }
+
+      const slotLayers = current.filter((entry) => entry.meshName === layer.meshName);
+      const slotIndex = slotLayers.findIndex((entry) => entry.id === layerId);
+      const targetIndex = direction === "up" ? slotIndex - 1 : slotIndex + 1;
+      if (slotIndex < 0 || targetIndex < 0 || targetIndex >= slotLayers.length) {
+        return current;
+      }
+
+      const reorderedSlotLayers = slotLayers.slice();
+      const [movedLayer] = reorderedSlotLayers.splice(slotIndex, 1);
+      reorderedSlotLayers.splice(targetIndex, 0, movedLayer);
+
+      let slotCursor = 0;
+      return current.map((entry) =>
+        entry.meshName === layer.meshName ? reorderedSlotLayers[slotCursor++] : entry
+      );
+    });
+  }, []);
+
+  const updateAppliedTextureLayer = useCallback(
+    (
+      layerId: string,
+      patch: Partial<{
+        fileName: string;
+        textureUrl: string | null;
+        uv: [number, number];
+        scale: number;
+        scaleX: number;
+        scaleY: number;
+        rotationDeg: number;
+      }>
+    ) => {
+      setAppliedUvTextures((current) =>
+        current.map((entry) =>
+          entry.id !== layerId
+            ? entry
+            : {
+                ...entry,
+                ...(typeof patch.fileName === "string" ? { fileName: patch.fileName } : {}),
+                ...(typeof patch.textureUrl === "string" ? { textureUrl: patch.textureUrl } : {}),
+                ...(patch.uv ? { uv: [patch.uv[0], patch.uv[1]] as [number, number] } : {}),
+                ...(typeof patch.scale === "number" ? { scale: patch.scale } : {}),
+                ...(typeof patch.scaleX === "number" ? { scaleX: patch.scaleX } : {}),
+                ...(typeof patch.scaleY === "number" ? { scaleY: patch.scaleY } : {}),
+                ...(typeof patch.rotationDeg === "number" ? { rotationDeg: patch.rotationDeg } : {}),
+              }
+        )
+      );
+    },
+    []
+  );
 
   const handleSelectAsset = (asset: AssetRecord) => {
     const id = String(asset.id);
@@ -1321,28 +1939,6 @@ function App() {
   const canUseReplacement = replacementSlots.length > 0;
   const shouldReplaceTexture = false;
   const preferredSceneUvSlot = TYPE_TO_PREFERRED_UV_SLOT[activeType] || null;
-  const appliedUvOverlays = useMemo(
-    () => [...appliedUvTextures, ...appliedUvDecals],
-    [appliedUvTextures, appliedUvDecals]
-  );
-  const paintedBasePreviewOverlays = useMemo(
-    () =>
-      (Object.entries(paintedBasePreviewBySlot) as [MeshSlot, string][])
-        .filter(([, textureUrl]) => Boolean(textureUrl))
-        .map(([meshName, textureUrl]) => ({
-          id: `preview:base:${meshName}`,
-          assetId: `preview:base:${meshName}`,
-          fileName: `${meshName}-base-paint.png`,
-          meshName,
-          uv: [0.5, 0.5] as [number, number],
-          scale: 1,
-          scaleX: 1,
-          scaleY: 1,
-          rotationDeg: 0,
-          textureUrl,
-        })),
-    [paintedBasePreviewBySlot]
-  );
 
   useEffect(() => {
     if (!preferredSceneUvSlot) {
@@ -1405,16 +2001,9 @@ function App() {
     () => buildSceneUvSlotOptions(uvTextureSlot),
     [composedScene.slotModelUrls, preferredSceneUvSlot, typeLabels, uvTextureSlot]
   );
-  const previewDraftOverlays = useMemo(() => {
+  const previewDraftDecals = useMemo(() => {
     const overlays: AppliedUvDecal[] = [];
-    const hasMatchingOverlay = (
-      candidate: Pick<
-        AppliedUvDecal,
-        "meshName" | "textureUrl" | "uv" | "scale" | "scaleX" | "scaleY" | "rotationDeg"
-      >
-    ) => appliedUvOverlays.some((entry) => isSameUvPlacement(entry, candidate));
-
-    if (selectedDecalAsset && decalTextureUrl && uvDecalSlot && (isStickerEditMode || isDecalUvEditorOpen)) {
+    if (decalTextureUrl && uvDecalSlot && (isStickerEditMode || isDecalUvEditorOpen)) {
       const candidate = {
         meshName: uvDecalSlot,
         textureUrl: decalTextureUrl,
@@ -1423,34 +2012,15 @@ function App() {
         scaleX: decalTransform.scaleX,
         scaleY: decalTransform.scaleY,
         rotationDeg: decalTransform.rotationDeg,
+        projection: decalProjectionBasis,
       };
 
-      if (!hasMatchingOverlay(candidate)) {
+      if (!appliedUvDecals.some((entry) => isSameUvPlacement(entry, candidate))) {
         overlays.push({
           id: "draft-preview:decal",
-          assetId: selectedDecalAsset.id,
-          fileName: selectedDecalAsset.fileName,
-          ...candidate,
-        });
-      }
-    }
-
-    if (replaceTextureUrlState && uvTextureSlot && isTextureUvEditorOpen) {
-      const candidate = {
-        meshName: uvTextureSlot,
-        textureUrl: replaceTextureUrlState,
-        uv: uvTextureDraftUv,
-        scale: replaceScale,
-        scaleX: replaceScaleX,
-        scaleY: replaceScaleY,
-        rotationDeg: replaceRotationDeg,
-      };
-
-      if (!hasMatchingOverlay(candidate)) {
-        overlays.push({
-          id: "draft-preview:texture",
-          assetId: `draft:texture:${uvTextureSlot}`,
-          fileName: replaceFileName || "texture",
+          assetId: selectedDecalAsset?.id || "draft-preview:decal",
+          fileName: selectedDecalAsset?.fileName || "draft-preview",
+          textStyle: selectedDecalAsset?.textStyle || null,
           ...candidate,
         });
       }
@@ -1458,31 +2028,24 @@ function App() {
 
     return overlays;
   }, [
-    appliedUvOverlays,
+    appliedUvDecals,
     decalTextureUrl,
+    decalProjectionBasis,
     decalTransform.rotationDeg,
     decalTransform.scale,
     decalTransform.scaleX,
     decalTransform.scaleY,
     isDecalUvEditorOpen,
     isStickerEditMode,
-    isTextureUvEditorOpen,
-    replaceFileName,
-    replaceRotationDeg,
-    replaceScale,
-    replaceScaleX,
-    replaceScaleY,
-    replaceTextureUrlState,
     selectedDecalAsset,
     uvDecalDraftUv,
     uvDecalSlot,
-    uvTextureDraftUv,
-    uvTextureSlot,
   ]);
-  const stageUvOverlays = useMemo(
-    () => mergeUniqueUvOverlays(appliedUvOverlays, paintedBasePreviewOverlays, previewDraftOverlays),
-    [appliedUvOverlays, paintedBasePreviewOverlays, previewDraftOverlays]
+  const stageUvDecals = useMemo(
+    () => mergeUniqueUvOverlays(appliedUvDecals, previewDraftDecals),
+    [appliedUvDecals, previewDraftDecals]
   );
+  const stageUvTextures = useMemo(() => appliedUvTextures, [appliedUvTextures]);
 
   useEffect(() => {
     const firstSlot = (decalSlotOptions[0]?.id as MeshSlot | undefined) || null;
@@ -1529,15 +2092,37 @@ function App() {
       return;
     }
 
+    const pendingPickedUv = pendingPickedDecalUvRef.current;
+    if (pendingPickedUv && pendingPickedUv.slot === uvDecalSlot) {
+      const pendingProjection =
+        pendingPickedDecalProjectionRef.current &&
+        pendingPickedDecalProjectionRef.current.slot === uvDecalSlot
+          ? pendingPickedDecalProjectionRef.current.projection
+          : null;
+      pendingPickedDecalUvRef.current = null;
+      pendingPickedDecalProjectionRef.current = null;
+      const nextScale = getDefaultDecalScaleForSlot(uvDecalSlot);
+      setUvDecalDraftUv(pendingPickedUv.uv);
+      setDecalProjectionBasis(pendingProjection);
+      setDecalTransform((current) => ({
+        ...current,
+        uv: pendingPickedUv.uv,
+        scale: nextScale,
+        scaleX: 1,
+        scaleY: 1,
+        rotationDeg: 0,
+      }));
+      return;
+    }
+
     const slotDecals = getAppliedUvDecalsForMesh(appliedUvDecals, uvDecalSlot);
     const latestSlotDecal = slotDecals[slotDecals.length - 1];
     if (latestSlotDecal) {
-      setSelectedDecalAssetId((current) =>
-        decalAssets.some((asset) => asset.id === latestSlotDecal.assetId)
-          ? latestSlotDecal.assetId
-          : current
-      );
+      if (decalAssets.some((asset) => asset.id === latestSlotDecal.assetId)) {
+        selectDecalAssetWithoutDraft(latestSlotDecal.assetId);
+      }
       setUvDecalDraftUv(latestSlotDecal.uv);
+      setDecalProjectionBasis(latestSlotDecal.projection || null);
       setDecalTransform((current) => ({
         ...current,
         scale: latestSlotDecal.scale,
@@ -1549,14 +2134,16 @@ function App() {
     }
 
     setUvDecalDraftUv([0.5, 0.5]);
+    setDecalProjectionBasis(null);
+    const nextScale = getDefaultDecalScaleForSlot(uvDecalSlot);
     setDecalTransform((current) => ({
       ...current,
-      scale: 0.35,
+      scale: nextScale,
       scaleX: 1,
       scaleY: 1,
       rotationDeg: 0,
     }));
-  }, [appliedUvDecals, decalAssets, uvDecalSlot]);
+  }, [appliedUvDecals, decalAssets, selectDecalAssetWithoutDraft, uvDecalSlot]);
 
   useEffect(() => {
     if (!uvTextureSlot) {
@@ -1568,28 +2155,21 @@ function App() {
       return;
     }
 
+    pendingPickedTextureUvRef.current = null;
     const slotTextures = getAppliedUvDecalsForMesh(appliedUvTextures, uvTextureSlot);
-    const latestSlotTexture = slotTextures[slotTextures.length - 1];
-    if (latestSlotTexture) {
-      setReplaceTextureUrlState((current) =>
-        current === latestSlotTexture.textureUrl ? current : latestSlotTexture.textureUrl
-      );
-      setReplaceFileName(latestSlotTexture.fileName || "texture");
-      setUvTextureDraftUv(latestSlotTexture.uv);
-      setReplaceScale(latestSlotTexture.scale);
-      setReplaceScaleX(latestSlotTexture.scaleX);
-      setReplaceScaleY(latestSlotTexture.scaleY);
-      setReplaceRotationDeg(latestSlotTexture.rotationDeg);
-      return;
-    }
+    const latestSlotTexture = slotTextures[slotTextures.length - 1] || null;
 
-    setReplaceTextureUrlState(null);
-    setReplaceFileName("");
-    setUvTextureDraftUv([0.5, 0.5]);
-    setReplaceScale(0.35);
-    setReplaceScaleX(1);
-    setReplaceScaleY(1);
-    setReplaceRotationDeg(0);
+    setReplaceTextureUrlState((current) =>
+      current === (latestSlotTexture?.textureUrl || null) ? current : latestSlotTexture?.textureUrl || null
+    );
+    setReplaceFileName((current) =>
+      current === (latestSlotTexture?.fileName || "") ? current : latestSlotTexture?.fileName || ""
+    );
+    setUvTextureDraftUv(latestSlotTexture?.uv || [0.5, 0.5]);
+    setReplaceScale(latestSlotTexture?.scale || 1);
+    setReplaceScaleX(latestSlotTexture?.scaleX || 1);
+    setReplaceScaleY(latestSlotTexture?.scaleY || 1);
+    setReplaceRotationDeg(latestSlotTexture?.rotationDeg || 0);
   }, [appliedUvTextures, uvTextureSlot]);
   const uvEditorModelUrl =
     (uvDecalSlot ? composedScene.slotModelUrls[uvDecalSlot] || null : null) ||
@@ -1688,7 +2268,9 @@ function App() {
           replaceTextureScaleX: replaceScaleX,
           replaceTextureScaleY: replaceScaleY,
           replaceTextureRotationDeg: replaceRotationDeg,
-          appliedUvDecals: appliedUvOverlays,
+          appliedUvDecals,
+          appliedUvTextures,
+          baseTextureOverrideUrls: paintedBasePreviewBySlot,
           baseModelUrl: selectedPreset?.baseModelUrl || null,
           slotModelUrls: composedScene.slotModelUrls,
         });
@@ -1729,13 +2311,26 @@ function App() {
   };
 
   const handleStagePointerDown = (event: ThreeEvent<PointerEvent>) => {
-    const clickedSurface = event.intersections.find((hit) =>
-      Boolean((hit.object as { userData?: Record<string, unknown> }).userData?.avatarSurface)
-    );
-    syncUvSlotFromMesh((clickedSurface?.object as Mesh | undefined) || null);
+    const clickedSurface = event.intersections.find((hit) => {
+      const object = hit.object as { visible?: boolean; userData?: Record<string, unknown> };
+      return object.visible !== false && Boolean(object.userData?.avatarSurface);
+    });
+    if (clickedSurface && isPaintPanelOpen && uvEditorMode === null) {
+      setUvEditorMode(selectedDecalAssetId && !replaceTextureUrlState ? "decal" : "texture");
+    }
+    if (clickedSurface && (isDecalUvEditorOpen || isTextureUvEditorOpen || isStickerEditMode)) {
+      updateStickerTransformFromEvent(event, null);
+    } else {
+      const pickedUv = clickedSurface?.uv
+        ? ([clickedSurface.uv.x, clickedSurface.uv.y] as [number, number])
+        : null;
+      const pickedMesh = (clickedSurface?.object as Mesh | undefined) || null;
+      const projectionBasis =
+        clickedSurface && pickedMesh ? computeDecalProjectionBasis(pickedMesh, clickedSurface) : null;
+      syncUvSlotFromMesh(pickedMesh, pickedUv, projectionBasis);
+    }
 
     if (!decalTextureUrl || !isStickerEditMode) return;
-    updateStickerTransformFromEvent(event, null);
     setIsStickerDragging(true);
     event.stopPropagation();
   };
@@ -1770,7 +2365,12 @@ function App() {
       normal: [normal.x, normal.y, normal.z],
       uv: uv || current.uv,
     }));
-    syncUvSlotFromMesh(mesh);
+    if (uv) {
+      setUvDecalDraftUv(uv);
+      setUvTextureDraftUv(uv);
+    }
+    setDecalProjectionBasis(null);
+    syncUvSlotFromMesh(mesh, uv);
   };
 
   const handleSelectColor = (color: string) => {
@@ -1847,6 +2447,29 @@ function App() {
     canUseReplacement,
     onUploadTexture: () => textureUploadInputRef.current?.click(),
     onRemoveTexture: () => {
+      if (uvTextureSlot) {
+        setAppliedUvTextures((current) =>
+          current.filter((entry) => entry.meshName !== uvTextureSlot)
+        );
+        setPaintedBasePreviewBySlot((current) => {
+          if (!current[uvTextureSlot]) {
+            return current;
+          }
+
+          const next = { ...current };
+          delete next[uvTextureSlot];
+          return next;
+        });
+        setPaintedBaseFileNameBySlot((current) => {
+          if (!current[uvTextureSlot]) {
+            return current;
+          }
+
+          const next = { ...current };
+          delete next[uvTextureSlot];
+          return next;
+        });
+      }
       setReplaceTextureUrlState((current) => {
         if (current && current.startsWith("blob:")) {
           URL.revokeObjectURL(current);
@@ -1854,9 +2477,11 @@ function App() {
         return null;
       });
       setReplaceFileName("");
-      setAppliedUvTextures([]);
       setUvTextureDraftUv([0.5, 0.5]);
-      setUvEditorMode((current) => (current === "texture" ? null : current));
+      setReplaceScale(1);
+      setReplaceScaleX(1);
+      setReplaceScaleY(1);
+      setReplaceRotationDeg(0);
     },
     replaceScale,
     onReplaceScale: setReplaceScale,
@@ -1886,17 +2511,30 @@ function App() {
     copy,
     slotOptions: decalSlotOptions,
     selectedSlot: uvDecalSlot,
-    onSelectSlot: (slot) => setUvDecalSlot(slot as MeshSlot),
+    onSelectSlot: (slot) => {
+      pendingPickedDecalUvRef.current = null;
+      pendingPickedDecalProjectionRef.current = null;
+      setDecalProjectionBasis(null);
+      setUvDecalSlot(slot as MeshSlot);
+    },
+    onSelectAssetId: selectDecalAssetWithoutDraft,
     modelUrl: uvEditorModelUrl,
     decalTextureUrl,
     appliedDecals: appliedUvDecals,
+    draftAssetId: selectedDecalAsset?.id || null,
     draftFileName: selectedDecalAsset?.fileName || "",
     draftUv: uvDecalDraftUv,
     scale: decalTransform.scale,
     scaleX: decalTransform.scaleX,
     scaleY: decalTransform.scaleY,
     rotationDeg: decalTransform.rotationDeg,
-    onDraftUvChange: setUvDecalDraftUv,
+    onDraftUvChange: (value) => {
+      pendingPickedDecalProjectionRef.current = null;
+      setDecalProjectionBasis(null);
+      setUvDecalDraftUv(value);
+    },
+    onCreateGeneratedDecal: createGeneratedDecalAsset,
+    onCreateDecalLayer: createDecalLayer,
     onBaseLayerPreviewChange: (slot, textureUrl) =>
       setPaintedBasePreviewBySlot((current) => {
         const meshSlot = slot as MeshSlot;
@@ -1946,23 +2584,22 @@ function App() {
         return;
       }
 
-      setAppliedUvDecals((current) => [
-        ...current,
-        {
-          id: makeClientId(),
-          assetId: selectedDecalAsset.id,
-          fileName: selectedDecalAsset.fileName,
-          meshName: uvDecalSlot,
-          uv: uvDecalDraftUv,
-          scale: decalTransform.scale,
-          scaleX: decalTransform.scaleX,
-          scaleY: decalTransform.scaleY,
-          rotationDeg: decalTransform.rotationDeg,
-          textureUrl: decalTextureUrl,
-        },
-      ]);
+      return createDecalLayer({
+        assetId: selectedDecalAsset.id,
+        fileName: selectedDecalAsset.fileName,
+        meshName: uvDecalSlot,
+        uv: uvDecalDraftUv,
+        scale: decalTransform.scale,
+        scaleX: decalTransform.scaleX,
+        scaleY: decalTransform.scaleY,
+        rotationDeg: decalTransform.rotationDeg,
+        textureUrl: decalTextureUrl,
+        textStyle: selectedDecalAsset.textStyle || null,
+        projection: decalProjectionBasis,
+      });
     },
     onReset: () => {
+      setDecalProjectionBasis(null);
       setUvDecalDraftUv([0.5, 0.5]);
       setDecalTransform((current) => ({
         ...current,
@@ -1976,6 +2613,15 @@ function App() {
       ),
     onRemoveAppliedLayer: (layerId) =>
       setAppliedUvDecals((current) => current.filter((entry) => entry.id !== layerId)),
+    onReplaceAppliedLayers: (layers) =>
+      setAppliedUvDecals(
+        layers.map((layer) => ({
+          ...layer,
+          meshName: layer.meshName as MeshSlot,
+        }))
+      ),
+    onUpdateAppliedLayer: updateAppliedDecalLayer,
+    onMoveAppliedLayer: moveAppliedDecalLayer,
     onCloseRequested: () => setIsPaintPanelOpen(false),
     hasApplied: Boolean(
       uvDecalSlot && getAppliedUvDecalsForMesh(appliedUvDecals, uvDecalSlot).length
@@ -1986,9 +2632,13 @@ function App() {
     copy: textureUvCopy,
     slotOptions: textureSlotOptions,
     selectedSlot: uvTextureSlot,
-    onSelectSlot: (slot) => setUvTextureSlot(slot as MeshSlot),
+    onSelectSlot: (slot) => {
+      pendingPickedTextureUvRef.current = null;
+      setUvTextureSlot(slot as MeshSlot);
+    },
     modelUrl: uvTextureEditorModelUrl,
-    decalTextureUrl: replaceTextureUrlState,
+    decalTextureUrl: null,
+    baseTextureOverrideUrl: null,
     appliedDecals: appliedUvTextures,
     draftFileName: replaceFileName || "",
     draftUv: uvTextureDraftUv,
@@ -1997,9 +2647,9 @@ function App() {
     scaleY: replaceScaleY,
     rotationDeg: replaceRotationDeg,
     onDraftUvChange: setUvTextureDraftUv,
-    onBaseLayerPreviewChange: (slot, textureUrl) =>
+    onBaseLayerPreviewChange: (slot, textureUrl) => {
+      const meshSlot = slot as MeshSlot;
       setPaintedBasePreviewBySlot((current) => {
-        const meshSlot = slot as MeshSlot;
         const previousValue = current[meshSlot] || null;
         if (previousValue === textureUrl) {
           return current;
@@ -2012,7 +2662,27 @@ function App() {
           delete next[meshSlot];
         }
         return next;
-      }),
+      });
+      setPaintedBaseFileNameBySlot((current) => {
+        const nextFileName =
+          textureUrl
+            ? current[meshSlot] ||
+              (uvTextureSlot === meshSlot ? replaceFileName || "texture" : "texture")
+            : null;
+        const previousValue = current[meshSlot] || null;
+        if (previousValue === nextFileName) {
+          return current;
+        }
+
+        const next = { ...current };
+        if (nextFileName) {
+          next[meshSlot] = nextFileName;
+        } else {
+          delete next[meshSlot];
+        }
+        return next;
+      });
+    },
     onDraftTextureUrlChange: (url) =>
       setReplaceTextureUrlState((current) => {
         if (current && current.startsWith("blob:")) {
@@ -2025,40 +2695,51 @@ function App() {
     onScaleXChange: setReplaceScaleX,
     onScaleYChange: setReplaceScaleY,
     onRotationDegChange: setReplaceRotationDeg,
-    onApply: () => {
-      if (!replaceTextureUrlState || !uvTextureSlot) {
-        return;
-      }
-
-      setAppliedUvTextures((current) => [
-        ...current,
-        {
-          id: makeClientId(),
-          assetId: `texture:${makeClientId()}`,
-          fileName: replaceFileName || "texture",
-          meshName: uvTextureSlot,
-          uv: uvTextureDraftUv,
-          scale: replaceScale,
-          scaleX: replaceScaleX,
-          scaleY: replaceScaleY,
-          rotationDeg: replaceRotationDeg,
-          textureUrl: replaceTextureUrlState,
-        },
-      ]);
-    },
+    onApply: () => undefined,
     onReset: () => {
       setUvTextureDraftUv([0.5, 0.5]);
-      setReplaceScale(0.35);
+      setReplaceScale(1);
       setReplaceScaleX(1);
       setReplaceScaleY(1);
       setReplaceRotationDeg(0);
     },
-    onClearApplied: () =>
+    onClearApplied: () => {
+      if (!uvTextureSlot) {
+        return;
+      }
+
       setAppliedUvTextures((current) =>
-        uvTextureSlot ? current.filter((entry) => entry.meshName !== uvTextureSlot) : current
-      ),
+        current.filter((entry) => entry.meshName !== uvTextureSlot)
+      );
+      setPaintedBasePreviewBySlot((current) => {
+        if (!current[uvTextureSlot]) {
+          return current;
+        }
+
+        const next = { ...current };
+        delete next[uvTextureSlot];
+        return next;
+      });
+      setPaintedBaseFileNameBySlot((current) => {
+        if (!current[uvTextureSlot]) {
+          return current;
+        }
+
+        const next = { ...current };
+        delete next[uvTextureSlot];
+        return next;
+      });
+    },
     onRemoveAppliedLayer: (layerId) =>
       setAppliedUvTextures((current) => current.filter((entry) => entry.id !== layerId)),
+    onReplaceAppliedLayers: (layers) =>
+      setAppliedUvTextures(
+        layers.map((layer) => ({
+          ...layer,
+          meshName: layer.meshName as MeshSlot,
+        }))
+      ),
+    onUpdateAppliedLayer: updateAppliedTextureLayer,
     onCloseRequested: () => setIsPaintPanelOpen(false),
     hasApplied: Boolean(
       uvTextureSlot && getAppliedUvDecalsForMesh(appliedUvTextures, uvTextureSlot).length
@@ -2098,7 +2779,9 @@ function App() {
         replaceRotationDeg={replaceRotationDeg}
         isAvatarStatic={isAvatarStatic}
         isStickerDragging={isStickerDragging}
-        appliedUvDecals={stageUvOverlays}
+        appliedUvDecals={stageUvDecals}
+        appliedUvTextures={stageUvTextures}
+        baseTextureOverrideUrls={paintedBasePreviewBySlot}
         selectedEyebrowColor={selectedEyebrowColor}
         decalTextureUrl={decalTextureUrl}
         stickerTargetMesh={stickerTargetMesh}

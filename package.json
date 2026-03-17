@@ -10,6 +10,8 @@
     "assets:sync-catalog": "node scripts/sync-asset-catalog.mjs",
     "assets:build": "node scripts/build-assets-manifest.mjs",
     "assets:download": "node scripts/download-local-library.mjs",
+    "fonts:gfto:sync": "node scripts/sync-gfto-fonts.mjs",
+    "brushes:sync": "node scripts/sync-brush-presets.mjs",
     "predev": "yarn assets:build",
     "prebuild": "yarn assets:build",
     "dev": "node scripts/dev.mjs",
@@ -28,6 +30,9 @@
     "@types/react-dom": "^18.2.7",
     "@types/three": "^0.183.1",
     "@vitejs/plugin-react-swc": "^3.4.0",
+    "fast-png": "^8.0.0",
+    "jszip": "^3.10.1",
+    "kaitai-struct": "^0.11.0",
     "typescript": "^5.2.2",
     "vite": "^4.4.9"
   },

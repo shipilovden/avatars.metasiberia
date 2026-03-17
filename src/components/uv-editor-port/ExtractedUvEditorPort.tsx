@@ -2,7 +2,16 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { BufferGeometry, Mesh, Texture } from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import type { UvDecalEditorProps } from "../UvDecalEditor";
+import { getCanonicalMeshSlot } from "../avatar/shared";
+import type { DecalProjectionBasis } from "../avatar/shared";
+import {
+  BRUSH_PRESETS,
+  DEFAULT_BRUSH_PRESET_ID,
+  STAMP_PRESETS,
+} from "./brush-presets";
+import type { BrushPreset, BrushPresetKind } from "./brush-presets";
 import { createUvPortDocumentFromLegacyProps } from "./legacy-adapter";
+import { GFTO_TEXT_FONT_OPTIONS } from "./gfto-font-options";
 import type {
   UvPortCropShape,
   UvPortLayer,
@@ -22,6 +31,8 @@ type CanvasSize = {
   width: number;
   height: number;
 };
+
+const BASE_PAINT_TOOLS = new Set<UvPortTool>(["brush", "eraser", "eyedropper", "fill"]);
 
 type ViewportState = {
   zoom: number;
@@ -112,6 +123,8 @@ type InteractionState =
       mode: "brush";
       pointerId: number;
       layerId: string;
+      paintMode: "base" | "layer";
+      paintLayer: UvPortLayer;
       lastPoint: {
         x: number;
         y: number;
@@ -156,6 +169,20 @@ type EditorHistorySnapshot = {
   soloLayerId: string | null;
   layerOverrides: Record<string, LayerOverride>;
   extraLayers: UvPortLayer[];
+  appliedLayers: {
+    id: string;
+    assetId: string;
+    fileName: string;
+    meshName: string;
+    uv: [number, number];
+    scale: number;
+    scaleX: number;
+    scaleY: number;
+    rotationDeg: number;
+    textureUrl: string;
+    textStyle?: UvPortLayer["textStyle"];
+    projection?: UvPortLayer["projection"];
+  }[];
   baseLayerTextureUrls: Record<string, string>;
   paintedBaseSlots: Record<string, boolean>;
   draftTextureUrl: string | null;
@@ -199,6 +226,8 @@ const ROTATION_HANDLE: LayerTransformHandle = {
   sy: 1,
 };
 
+const TEXT_FONT_OPTIONS = GFTO_TEXT_FONT_OPTIONS;
+
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 const clamp01 = (value: number) => clamp(value, 0, 1);
 const roundToStep = (value: number, step: number) => Math.round(value / step) * step;
@@ -215,6 +244,47 @@ const cloneLayerOverrides = (overrides: Record<string, LayerOverride>) =>
 const cloneLayer = (layer: UvPortLayer): UvPortLayer => ({
   ...layer,
   uv: cloneUv(layer.uv),
+  textStyle: layer.textStyle ? { ...layer.textStyle } : layer.textStyle,
+  projection: layer.projection
+    ? {
+        position: [...layer.projection.position] as [number, number, number],
+        axisU: [...layer.projection.axisU] as [number, number, number],
+        axisV: [...layer.projection.axisV] as [number, number, number],
+        ...(layer.projection.normal
+          ? { normal: [...layer.projection.normal] as [number, number, number] }
+          : {}),
+      }
+    : layer.projection,
+});
+const cloneAppliedLayer = (
+  layer: {
+    id: string;
+    assetId: string;
+    fileName: string;
+    meshName: string;
+    uv: [number, number];
+    scale: number;
+    scaleX: number;
+    scaleY: number;
+    rotationDeg: number;
+    textureUrl: string;
+    textStyle?: UvPortLayer["textStyle"];
+    projection?: DecalProjectionBasis | null;
+  }
+) => ({
+  ...layer,
+  uv: [layer.uv[0], layer.uv[1]] as [number, number],
+  textStyle: layer.textStyle ? { ...layer.textStyle } : layer.textStyle,
+  projection: layer.projection
+    ? {
+        position: [...layer.projection.position] as [number, number, number],
+        axisU: [...layer.projection.axisU] as [number, number, number],
+        axisV: [...layer.projection.axisV] as [number, number, number],
+        ...(layer.projection.normal
+          ? { normal: [...layer.projection.normal] as [number, number, number] }
+          : {}),
+      }
+    : layer.projection,
 });
 
 const makeClientLayerId = () => {
@@ -235,13 +305,17 @@ const findMeshByName = (
   meshName: string
 ): Mesh | null => {
   let targetMesh: Mesh | null = null;
+  const targetSlot = getCanonicalMeshSlot(meshName) || meshName;
   root.traverse((object) => {
     if (targetMesh) {
       return;
     }
 
     const mesh = object as Mesh & { isMesh?: boolean };
-    if (mesh.isMesh && mesh.name === meshName) {
+    if (
+      mesh.isMesh &&
+      (mesh.name === meshName || (mesh.name && (getCanonicalMeshSlot(mesh.name) || mesh.name) === targetSlot))
+    ) {
       targetMesh = mesh;
     }
   });
@@ -256,6 +330,203 @@ const loadImage = (url: string) =>
     image.onerror = () => reject(new Error(`Failed to load image: ${url}`));
     image.src = url;
   });
+
+let tintedBrushCanvas: HTMLCanvasElement | null = null;
+
+const ensureTintedBrushCanvas = (width: number, height: number) => {
+  if (typeof document === "undefined") {
+    return null;
+  }
+
+  if (!tintedBrushCanvas) {
+    tintedBrushCanvas = document.createElement("canvas");
+  }
+
+  if (tintedBrushCanvas.width !== width || tintedBrushCanvas.height !== height) {
+    tintedBrushCanvas.width = width;
+    tintedBrushCanvas.height = height;
+  }
+
+  return tintedBrushCanvas;
+};
+
+const sanitizeGeneratedTextFileName = (value: string, isRussian: boolean) => {
+  const fallback = isRussian ? "Текст" : "Text";
+  const normalized = value.replace(/\s+/g, " ").trim();
+  const shortened = normalized.slice(0, 32).trim();
+  const cleaned = (shortened || fallback).replace(/[<>:"/\\|?*\u0000-\u001F]/g, "").trim();
+  return cleaned || fallback;
+};
+
+const trimCanvasTransparentBounds = (canvas: HTMLCanvasElement, paddingPx: number) => {
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return canvas;
+  }
+
+  const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+  const { data, width, height } = imageData;
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const alpha = data[(y * width + x) * 4 + 3];
+      if (alpha <= 8) {
+        continue;
+      }
+
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+
+  if (maxX < minX || maxY < minY) {
+    return canvas;
+  }
+
+  const padding = Math.max(2, Math.round(paddingPx));
+  const cropLeft = Math.max(0, minX - padding);
+  const cropTop = Math.max(0, minY - padding);
+  const cropRight = Math.min(width, maxX + padding + 1);
+  const cropBottom = Math.min(height, maxY + padding + 1);
+  const cropWidth = Math.max(1, cropRight - cropLeft);
+  const cropHeight = Math.max(1, cropBottom - cropTop);
+
+  if (cropWidth === width && cropHeight === height && cropLeft === 0 && cropTop === 0) {
+    return canvas;
+  }
+
+  const trimmedCanvas = document.createElement("canvas");
+  trimmedCanvas.width = cropWidth;
+  trimmedCanvas.height = cropHeight;
+  const trimmedContext = trimmedCanvas.getContext("2d");
+  if (!trimmedContext) {
+    return canvas;
+  }
+
+  trimmedContext.drawImage(
+    canvas,
+    cropLeft,
+    cropTop,
+    cropWidth,
+    cropHeight,
+    0,
+    0,
+    cropWidth,
+    cropHeight
+  );
+
+  return trimmedCanvas;
+};
+
+const createTextDecalTexture = ({
+  text,
+  fontFamily,
+  fontSize,
+  color,
+  isRussian,
+}: {
+  text: string;
+  fontFamily: string;
+  fontSize: number;
+  color: string;
+  isRussian: boolean;
+}) => {
+  if (typeof document === "undefined") {
+    return null;
+  }
+
+  const normalizedText = text.replace(/\r\n/g, "\n").trim();
+  if (!normalizedText) {
+    return null;
+  }
+
+  const lines = normalizedText.split("\n");
+  const probeCanvas = document.createElement("canvas");
+  const probeContext = probeCanvas.getContext("2d");
+  if (!probeContext) {
+    return null;
+  }
+
+  const safeFontSize = clamp(Math.round(fontSize), 18, 220);
+  const fontDeclaration = `700 ${safeFontSize}px ${fontFamily}`;
+  probeContext.font = fontDeclaration;
+
+  const measuredWidth = lines.reduce(
+    (maxWidth, line) => Math.max(maxWidth, probeContext.measureText(line || " ").width),
+    safeFontSize
+  );
+  const lineHeight = Math.max(24, Math.round(safeFontSize * 1.18));
+  const logicalWidth = Math.ceil(measuredWidth + safeFontSize * 1.5);
+  const logicalHeight = Math.ceil(lines.length * lineHeight + safeFontSize);
+  const scaleFactor = 2;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = clamp(logicalWidth * scaleFactor, 256, 2048);
+  canvas.height = clamp(logicalHeight * scaleFactor, 256, 2048);
+
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return null;
+  }
+
+  const width = canvas.width / scaleFactor;
+  const height = canvas.height / scaleFactor;
+  const startY = (height - lines.length * lineHeight) * 0.5 + lineHeight * 0.5;
+
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.scale(scaleFactor, scaleFactor);
+  context.font = fontDeclaration;
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillStyle = color;
+  context.shadowColor = "rgba(0, 0, 0, 0.18)";
+  context.shadowBlur = Math.max(2, safeFontSize * 0.08);
+  context.shadowOffsetY = Math.max(1, safeFontSize * 0.03);
+
+  lines.forEach((line, index) => {
+    context.fillText(line || " ", width * 0.5, startY + index * lineHeight);
+  });
+
+  const fileStem = sanitizeGeneratedTextFileName(normalizedText, isRussian);
+  const trimmedCanvas = trimCanvasTransparentBounds(canvas, safeFontSize * 0.12 * scaleFactor);
+  return {
+    fileName: `${fileStem}.png`,
+    textureUrl: trimmedCanvas.toDataURL("image/png"),
+    textStyle: {
+      text: normalizedText,
+      fontFamily,
+      fontSize: safeFontSize,
+      color,
+    },
+  };
+};
+
+const ensureTextFontLoaded = async ({
+  fontFamily,
+  fontSize,
+  sample,
+}: {
+  fontFamily: string;
+  fontSize: number;
+  sample: string;
+}) => {
+  if (typeof document === "undefined" || !("fonts" in document)) {
+    return;
+  }
+
+  const safeFontSize = clamp(Math.round(fontSize), 18, 220);
+  const sampleText = sample.trim() || "Text";
+  await (document as Document & { fonts?: FontFaceSet }).fonts?.load?.(
+    `700 ${safeFontSize}px ${fontFamily}`,
+    sampleText
+  );
+};
 
 const getCanvasMetrics = (size: CanvasSize, viewport: ViewportState) => {
   const viewSize = Math.min(size.width, size.height) * viewport.zoom;
@@ -976,6 +1247,58 @@ const buildMeshMetrics = (geometry: BufferGeometry | null | undefined): MeshMetr
   };
 };
 
+const createUvMaskCanvas = (geometry: BufferGeometry | null | undefined, size = 1024) => {
+  const uvAttribute = geometry?.getAttribute("uv");
+  if (!geometry || !uvAttribute || size <= 0) {
+    return null;
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return null;
+  }
+
+  const getPoint = (index: number) => ({
+    x: uvAttribute.getX(index) * canvas.width,
+    y: (1 - uvAttribute.getY(index)) * canvas.height,
+  });
+
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.fillStyle = "#ffffff";
+
+  const indexAttribute = geometry.getIndex();
+  if (indexAttribute) {
+    for (let triangleIndex = 0; triangleIndex < indexAttribute.count; triangleIndex += 3) {
+      const pointA = getPoint(indexAttribute.getX(triangleIndex));
+      const pointB = getPoint(indexAttribute.getX(triangleIndex + 1));
+      const pointC = getPoint(indexAttribute.getX(triangleIndex + 2));
+      context.beginPath();
+      context.moveTo(pointA.x, pointA.y);
+      context.lineTo(pointB.x, pointB.y);
+      context.lineTo(pointC.x, pointC.y);
+      context.closePath();
+      context.fill();
+    }
+  } else {
+    for (let triangleIndex = 0; triangleIndex + 2 < uvAttribute.count; triangleIndex += 3) {
+      const pointA = getPoint(triangleIndex);
+      const pointB = getPoint(triangleIndex + 1);
+      const pointC = getPoint(triangleIndex + 2);
+      context.beginPath();
+      context.moveTo(pointA.x, pointA.y);
+      context.lineTo(pointB.x, pointB.y);
+      context.lineTo(pointC.x, pointC.y);
+      context.closePath();
+      context.fill();
+    }
+  }
+
+  return canvas;
+};
+
 const exportCanvasAsPng = (canvas: HTMLCanvasElement, fileName: string) => {
   const url = canvas.toDataURL("image/png");
   const link = document.createElement("a");
@@ -1072,6 +1395,7 @@ const paintBrushStamp = ({
   paintTarget,
   radius,
   softness,
+  maskImage,
 }: {
   context: CanvasRenderingContext2D;
   x: number;
@@ -1081,8 +1405,54 @@ const paintBrushStamp = ({
   paintTarget: UvPortPaintTarget;
   radius: number;
   softness: number;
+  maskImage?: CanvasImageSource | null;
 }) => {
   const clampedRadius = Math.max(0.5, radius);
+
+  if (maskImage) {
+    const sourceSize = getCanvasImageSize(maskImage);
+    if (!sourceSize) {
+      return;
+    }
+    const diameter = clampedRadius * 2;
+    const scale = diameter / Math.max(sourceSize.width, sourceSize.height);
+    const drawWidth = Math.max(1, Math.round(sourceSize.width * scale));
+    const drawHeight = Math.max(1, Math.round(sourceSize.height * scale));
+    const drawX = x - drawWidth * 0.5;
+    const drawY = y - drawHeight * 0.5;
+    const blurPx = softness > 0 ? Math.max(0, softness * Math.max(drawWidth, drawHeight) * 0.04) : 0;
+
+    if (paintTarget === "mask" || isEraser) {
+      context.save();
+      context.globalCompositeOperation = isEraser ? "destination-out" : "source-over";
+      context.filter = blurPx > 0.25 ? `blur(${blurPx}px)` : "none";
+      context.drawImage(maskImage, drawX, drawY, drawWidth, drawHeight);
+      context.restore();
+      return;
+    }
+
+    const tintCanvas = ensureTintedBrushCanvas(drawWidth, drawHeight);
+    const tintContext = tintCanvas?.getContext("2d");
+
+    if (!tintCanvas || !tintContext) {
+      return;
+    }
+
+    tintContext.clearRect(0, 0, drawWidth, drawHeight);
+    tintContext.drawImage(maskImage, 0, 0, drawWidth, drawHeight);
+    tintContext.globalCompositeOperation = "source-in";
+    tintContext.fillStyle = color;
+    tintContext.fillRect(0, 0, drawWidth, drawHeight);
+    tintContext.globalCompositeOperation = "source-over";
+
+    context.save();
+    context.globalCompositeOperation = "source-over";
+    context.filter = blurPx > 0.25 ? `blur(${blurPx}px)` : "none";
+    context.drawImage(tintCanvas, drawX, drawY, drawWidth, drawHeight);
+    context.restore();
+    return;
+  }
+
   const innerRadius = clampedRadius * (1 - softness);
   const gradient = context.createRadialGradient(x, y, innerRadius, x, y, clampedRadius);
   const colorStop =
@@ -1124,6 +1494,12 @@ const getLocaleStrings = (copy: UvDecalEditorProps["copy"]) => {
     toolbarApply: isRussian ? "Применить" : "Apply",
     toolbarSave: isRussian ? "Сохранить" : "Save",
     toolbarPng: "PNG",
+    textTitle: isRussian ? "Текст" : "Text",
+    textPlaceholder: isRussian ? "Введите текст для слоя" : "Enter text for the layer",
+    textFont: isRussian ? "Шрифт" : "Font",
+    textSize: isRussian ? "Размер" : "Size",
+    textColor: isRussian ? "Цвет текста" : "Text color",
+    addText: isRussian ? "Добавить текст" : "Add text",
     toolbarUndo: isRussian ? "Назад" : "Back",
     toolbarRedo: isRussian ? "Вперёд" : "Forward",
     toolbarSnap: isRussian ? "Шаг" : "Snap",
@@ -1138,6 +1514,7 @@ const getLocaleStrings = (copy: UvDecalEditorProps["copy"]) => {
     rotateRight: isRussian ? "+15°" : "Rotate +15",
     reset: isRussian ? "Сброс" : "Reset",
     target: isRussian ? "Цель" : "Target",
+    mode: isRussian ? "Режим" : "Mode",
     opacity: isRussian ? "Непрозрачность" : "Opacity",
     tool: isRussian ? "Инструмент" : "Tool",
     cropShape: isRussian ? "Форма обрезки" : "Crop Shape",
@@ -1148,6 +1525,7 @@ const getLocaleStrings = (copy: UvDecalEditorProps["copy"]) => {
     brushTool: isRussian ? "Кисть" : "Brush",
     eraser: isRussian ? "Ластик" : "Eraser",
     eyedropper: isRussian ? "Пипетка" : "Pipette",
+    fillTool: isRussian ? "Заливка" : "Fill",
     rect: isRussian ? "Прямоуг." : "Rect",
     circle: isRussian ? "Круг" : "Circle",
     image: isRussian ? "Изображение" : "Image",
@@ -1168,11 +1546,17 @@ const getLocaleStrings = (copy: UvDecalEditorProps["copy"]) => {
     baseMap: isRussian ? "Базовая карта" : "Base map",
     draft: isRussian ? "Черновик" : "Draft",
     decal: isRussian ? "Декаль" : "Decal",
+    brushPreset: isRussian ? "\u041f\u0440\u0435\u0441\u0435\u0442" : "Preset",
+    brushPresetType: isRussian ? "\u0422\u0438\u043f \u043a\u0438\u0441\u0442\u0438" : "Preset Type",
+    brushPresets: isRussian ? "\u041a\u0438\u0441\u0442\u0438" : "Brushes",
+    stampPresets: isRussian ? "\u0428\u0442\u0430\u043c\u043f\u044b" : "Stamps",
     previewTitle: "UV Preview",
     previewHint: isRussian ? "Колесо zoom, RMB/MMB pan, Alt + drag" : "Wheel zoom, RMB/MMB pan, Alt + drag",
     noMesh: isRussian ? "Нет UV-меша для текущего слота" : "No UV mesh for the current slot",
     removeAsset: isRussian ? "Удалить" : "Remove",
     removeLayer: isRussian ? "Удалить слой" : "Remove layer",
+    moveLayerUp: isRussian ? "Поднять слой" : "Move layer up",
+    moveLayerDown: isRussian ? "Опустить слой" : "Move layer down",
     currentFile: isRussian ? "Текущий файл" : "Current file",
     close: isRussian ? "Закрыть" : "Close",
     closeHint: isRussian
@@ -1200,6 +1584,12 @@ const getLocaleStrings = (copy: UvDecalEditorProps["copy"]) => {
     removeLayerHint: isRussian
       ? "Удалить этот слой из редактора и убрать его с аватара."
       : "Remove this layer from the editor and from the avatar.",
+    moveLayerUpHint: isRussian
+      ? "Поднять слой выше в порядке наложения, чтобы он рисовался поверх нижних слоёв."
+      : "Move this layer higher in the stack so it renders above the layers below it.",
+    moveLayerDownHint: isRussian
+      ? "Опустить слой ниже в порядке наложения, чтобы другие слои могли перекрывать его."
+      : "Move this layer lower in the stack so other layers can render above it.",
     currentFileTooltip: (fileName: string) =>
       isRussian
         ? `Сейчас загружен файл: ${fileName || "не выбран"}.`
@@ -1276,11 +1666,35 @@ const getLocaleStrings = (copy: UvDecalEditorProps["copy"]) => {
     eyedropperHint: isRussian
       ? "Взять цвет с базовой карты под курсором."
       : "Pick a color from the base map under the cursor.",
+    fillToolHint: isRussian
+      ? "Залить весь выбранный базовый слой текущим цветом, сохранив прозрачные области."
+      : "Fill the selected base layer with the current color while preserving transparent areas.",
     rectHint: isRussian ? "Прямоугольная форма обрезки." : "Use a rectangular crop shape.",
     circleHint: isRussian ? "Круглая форма обрезки." : "Use a circular crop shape.",
     brushColorHint: isRussian ? "Выбрать цвет, которым будет рисовать кисть." : "Choose the color used by the brush.",
     brushSizeHint: isRussian ? "Изменить размер кисти." : "Adjust the brush size.",
     brushSoftnessHint: isRussian ? "Настроить мягкость краёв кисти." : "Adjust how soft the brush edges are.",
+    brushPresetHint: isRussian
+      ? "\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u0444\u043e\u0440\u043c\u0443 \u043a\u0438\u0441\u0442\u0438 \u0438\u043b\u0438 \u0448\u0442\u0430\u043c\u043f\u0430 \u0434\u043b\u044f \u0440\u0438\u0441\u043e\u0432\u0430\u043d\u0438\u044f."
+      : "Choose the brush or stamp shape used for painting.",
+    brushPresetTypeHint: isRussian
+      ? "\u041f\u0435\u0440\u0435\u043a\u043b\u044e\u0447\u0438\u0442\u044c \u043c\u0435\u0436\u0434\u0443 \u043e\u0431\u044b\u0447\u043d\u044b\u043c\u0438 \u043a\u0438\u0441\u0442\u044f\u043c\u0438 \u0438 \u0448\u0442\u0430\u043c\u043f\u0430\u043c\u0438."
+      : "Switch between continuous brushes and stamp presets.",
+    textPlaceholderHint: isRussian
+      ? "Введите слово, фразу или несколько строк, чтобы создать новый текстовый слой."
+      : "Enter a word, phrase, or multiple lines to create a new text layer.",
+    textFontHint: isRussian
+      ? "Выберите шрифт, которым будет создан текстовый слой."
+      : "Choose the font used to generate the text layer.",
+    textSizeHint: isRussian
+      ? "Настройте базовый размер текста перед созданием слоя."
+      : "Adjust the base text size before creating the layer.",
+    textColorHint: isRussian
+      ? "Выберите цвет для нового текстового слоя."
+      : "Choose the color for the new text layer.",
+    addTextHint: isRussian
+      ? "Создать новый слой-декаль из введённого текста и сделать его активным."
+      : "Create a new decal layer from the entered text and make it active.",
     imageHint: isRussian ? "Рисовать по самому изображению слоя." : "Paint directly on the layer image.",
     maskHint: isRussian
       ? "Рисовать по маске слоя, чтобы скрывать или показывать части изображения."
@@ -1315,8 +1729,11 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     copy,
     slotOptions,
     selectedSlot,
+    onSelectAssetId,
     modelUrl,
     decalTextureUrl,
+    baseTextureOverrideUrl,
+    appliedDecals,
     draftUv,
     scale,
     scaleX,
@@ -1324,7 +1741,10 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     rotationDeg,
     onDraftUvChange,
     onDraftTextureUrlChange,
+    draftAssetId,
     onDraftFileNameChange,
+    onCreateGeneratedDecal,
+    onCreateDecalLayer,
     onBaseLayerPreviewChange,
     onScaleChange,
     onScaleXChange,
@@ -1335,18 +1755,23 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     onReset,
     onClearApplied,
     onRemoveAppliedLayer,
+    onReplaceAppliedLayers,
+    onUpdateAppliedLayer,
+    onMoveAppliedLayer,
     hasApplied,
     onCloseRequested,
     extractedControls,
   } = props;
 
   const locale = useMemo(() => getLocaleStrings(copy), [copy]);
+  const isTextureMode = extractedControls?.mode === "texture";
   const toolHints: Record<UvPortTool, string> = {
     transform: locale.transformHint,
     crop: locale.cropHint,
     brush: locale.brushToolHint,
     eraser: locale.eraserHint,
     eyedropper: locale.eyedropperHint,
+    fill: locale.fillToolHint,
   };
   const cropShapeHints: Record<UvPortCropShape, string> = {
     rect: locale.rectHint,
@@ -1369,6 +1794,12 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
   const [brushColor, setBrushColor] = useState("#ffb347");
   const [brushSize, setBrushSize] = useState(24);
   const [brushSoftness, setBrushSoftness] = useState(38);
+  const [brushPresetKind, setBrushPresetKind] = useState<BrushPresetKind>("brush");
+  const [brushPresetId, setBrushPresetId] = useState(DEFAULT_BRUSH_PRESET_ID);
+  const [textValue, setTextValue] = useState("");
+  const [textFontFamily, setTextFontFamily] = useState(TEXT_FONT_OPTIONS[0]?.value || 'Arial, sans-serif');
+  const [textFontSize, setTextFontSize] = useState(96);
+  const [textColor, setTextColor] = useState("#111111");
   const [showMaskPreview, setShowMaskPreview] = useState(false);
   const [snapEnabled, setSnapEnabled] = useState(false);
   const [soloLayerId, setSoloLayerId] = useState<string | null>(null);
@@ -1383,26 +1814,43 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
   const canvasWrapRef = useRef<HTMLDivElement | null>(null);
   const interactionRef = useRef<InteractionState>(null);
   const baseLayerCanvasRef = useRef<Record<string, HTMLCanvasElement>>({});
+  const editableLayerCanvasRef = useRef<Record<string, HTMLCanvasElement>>({});
   const baseLayerModelUrlRef = useRef<Record<string, string>>({});
+  const previousBaseTextureOverrideUrlRef = useRef<string | null | undefined>(undefined);
+  const latestInteractiveLayerIdRef = useRef<string | null>(null);
+  const lastSyncedTextLayerSignatureRef = useRef<string | null>(null);
 
   const activeSlot = selectedSlot || slotOptions[0]?.id || null;
   const activeLoadedMesh = loadedMesh && loadedMesh.meshName === activeSlot ? loadedMesh : null;
+  const activeBrushPresetOptions = brushPresetKind === "stamp" ? STAMP_PRESETS : BRUSH_PRESETS;
+  const activeBrushPreset: BrushPreset | null =
+    activeBrushPresetOptions.find((preset) => preset.id === brushPresetId) ||
+    activeBrushPresetOptions[0] ||
+    BRUSH_PRESETS[0] ||
+    null;
   const editorWindow = useFloatingWindow({
     initialRect: () => {
-      const width =
-        typeof window === "undefined" ? 620 : Math.min(620, Math.max(420, window.innerWidth - 520));
-      const height =
-        typeof window === "undefined" ? 860 : Math.min(860, Math.max(540, window.innerHeight - 84));
-      return { left: 6, top: 62, width, height };
+      if (typeof window === "undefined") {
+        return { left: 8, top: 62, width: 448, height: 510 };
+      }
+
+      const width = Math.min(448, Math.max(416, Math.round(window.innerWidth * 0.235)));
+      const height = Math.min(590, Math.max(500, Math.round(window.innerHeight * 0.525)));
+      return { left: 8, top: 62, width, height };
     },
     minWidth: 380,
     minHeight: 420,
   });
   const previewWindow = useFloatingWindow({
     initialRect: () => {
-      const width =
-        typeof window === "undefined" ? 380 : Math.min(420, Math.max(280, window.innerWidth - 1040));
-      return { left: 650, top: 92, width, height: 470 };
+      if (typeof window === "undefined") {
+        return { left: 1030, top: 72, width: 420, height: 470 };
+      }
+
+      const width = Math.min(420, Math.max(380, Math.round(window.innerWidth * 0.22)));
+      const height = Math.min(500, Math.max(460, Math.round(window.innerHeight * 0.49)));
+      const left = Math.max(470, window.innerWidth - 460 - width - 18);
+      return { left, top: 72, width, height };
     },
     minWidth: 260,
     minHeight: 220,
@@ -1420,10 +1868,17 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     setCropPreview(null);
     setUndoStack([]);
     setRedoStack([]);
+    editableLayerCanvasRef.current = {};
   }, [
     activeSlot,
     modelUrl,
   ]);
+
+  useEffect(() => {
+    if (!activeBrushPresetOptions.some((preset) => preset.id === brushPresetId)) {
+      setBrushPresetId(activeBrushPresetOptions[0]?.id || DEFAULT_BRUSH_PRESET_ID);
+    }
+  }, [activeBrushPresetOptions, brushPresetId]);
 
   useEffect(() => {
     if (!activeSlot || !modelUrl) {
@@ -1483,6 +1938,36 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     renderLayers.find((layer) => layer.kind === "base") ||
     renderLayers[0] ||
     null;
+  const selectedTextLayer =
+    selectedLayer &&
+    (selectedLayer.kind === "decal" || selectedLayer.kind === "draft") &&
+    selectedLayer.textStyle
+      ? selectedLayer
+      : null;
+  const latestInteractiveLayerId =
+    [...renderLayers]
+      .reverse()
+      .find((layer) => layer.kind === "decal" || layer.kind === "draft")?.id || null;
+
+  useEffect(() => {
+    const previousLatest = latestInteractiveLayerIdRef.current;
+    latestInteractiveLayerIdRef.current = latestInteractiveLayerId;
+    if (
+      latestInteractiveLayerId &&
+      latestInteractiveLayerId !== previousLatest &&
+      (!selectedLayer || selectedLayer.kind === "base" || selectedLayer.kind === "uv-layout")
+    ) {
+      setSelectedLayerId(latestInteractiveLayerId);
+    }
+  }, [latestInteractiveLayerId, selectedLayer]);
+
+  useEffect(() => {
+    if (!onSelectAssetId || !selectedLayer?.assetId) {
+      return;
+    }
+    onSelectAssetId(selectedLayer.assetId);
+  }, [onSelectAssetId, selectedLayer?.assetId]);
+
   const getLayerPreviewImage = (layer: UvPortLayer | null) => {
     if (!layer) {
       return null;
@@ -1497,30 +1982,61 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     return layer.textureUrl ? images[layer.textureUrl] || null : null;
   };
   const selectedLayerPreviewImage = getLayerPreviewImage(selectedLayer);
+  const activeBrushPresetImage =
+    activeBrushPreset?.shape === "mask" && activeBrushPreset.maskSrc
+      ? images[activeBrushPreset.maskSrc] || null
+      : null;
+
+  useEffect(() => {
+    if (!selectedTextLayer?.textStyle) {
+      return;
+    }
+
+    const nextSignature = JSON.stringify({
+      id: selectedTextLayer.id,
+      text: selectedTextLayer.textStyle.text,
+      fontFamily: selectedTextLayer.textStyle.fontFamily,
+      fontSize: selectedTextLayer.textStyle.fontSize,
+      color: selectedTextLayer.textStyle.color,
+    });
+    if (lastSyncedTextLayerSignatureRef.current === nextSignature) {
+      return;
+    }
+
+    lastSyncedTextLayerSignatureRef.current = nextSignature;
+    setTextValue(selectedTextLayer.textStyle.text);
+    setTextFontFamily(selectedTextLayer.textStyle.fontFamily);
+    setTextFontSize(selectedTextLayer.textStyle.fontSize);
+    setTextColor(selectedTextLayer.textStyle.color);
+  }, [selectedTextLayer]);
+
   const getLayerKindLabel = (layer: UvPortLayer) =>
     layer.kind === "uv-layout"
       ? locale.uvLayout
       : layer.kind === "base"
         ? locale.baseMap
         : layer.kind === "draft"
-          ? locale.draft
-          : locale.decal;
+          ? extractedControls?.mode === "texture"
+            ? extractedControls.labels.texture
+            : locale.draft
+          : extractedControls?.mode === "texture"
+            ? extractedControls.labels.texture
+            : locale.decal;
   const getTooltipProps = (label: string) => ({
     title: label,
     "aria-label": label,
   });
 
-  const textureUrls = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          renderLayers
-            .map((layer) => layer.textureUrl)
-            .filter((value): value is string => Boolean(value))
-        )
-      ),
-    [renderLayers]
-  );
+  const textureUrls = useMemo(() => {
+    const layerTextureUrls = renderLayers
+      .map((layer) => layer.textureUrl)
+      .filter((value): value is string => Boolean(value));
+    const brushTextureUrls = activeBrushPresetOptions
+      .map((preset) => preset.maskSrc)
+      .filter((value): value is string => Boolean(value));
+
+    return Array.from(new Set([...layerTextureUrls, ...brushTextureUrls]));
+  }, [activeBrushPresetOptions, renderLayers]);
 
   useEffect(() => {
     if (!modelUrl || !activeSlot) {
@@ -1619,51 +2135,77 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
   }, [activeLoadedMesh?.baseTextureImage, activeSlot, baseLayerTextureUrls]);
 
   useEffect(() => {
-    if (!activeSlot || !paintedBaseSlots[activeSlot]) {
+    if (!isTextureMode || !activeSlot) {
       return;
     }
 
-    const paintedUrl = baseLayerTextureUrls[activeSlot];
-    if (!paintedUrl) {
+    const previousOverrideUrl = previousBaseTextureOverrideUrlRef.current;
+    previousBaseTextureOverrideUrlRef.current = baseTextureOverrideUrl;
+
+    if (baseTextureOverrideUrl) {
+      setBaseLayerTextureUrls((current) =>
+        current[activeSlot] === baseTextureOverrideUrl
+          ? current
+          : { ...current, [activeSlot]: baseTextureOverrideUrl }
+      );
+      setPaintedBaseSlots((current) =>
+        current[activeSlot] ? current : { ...current, [activeSlot]: true }
+      );
+
+      const overrideImage = images[baseTextureOverrideUrl] || null;
+      const overrideCanvas = cloneCanvasImageSourceToCanvas(overrideImage);
+      if (overrideCanvas) {
+        baseLayerCanvasRef.current[activeSlot] = overrideCanvas;
+      }
       return;
     }
 
-    if (decalTextureUrl !== paintedUrl) {
-      onDraftTextureUrlChange?.(paintedUrl);
+    if (!previousOverrideUrl) {
+      return;
     }
-    onDraftFileNameChange?.(`${activeSlot}-base-paint.png`);
-    if (draftUv[0] !== 0.5 || draftUv[1] !== 0.5) {
-      onDraftUvChange([0.5, 0.5]);
+
+    const restoredBaseCanvas = cloneCanvasImageSourceToCanvas(
+      activeLoadedMesh?.baseTextureImage || null
+    );
+    const restoredBaseUrl = canvasImageSourceToDataUrl(
+      activeLoadedMesh?.baseTextureImage || null
+    );
+
+    if (restoredBaseCanvas) {
+      baseLayerCanvasRef.current[activeSlot] = restoredBaseCanvas;
+    } else {
+      delete baseLayerCanvasRef.current[activeSlot];
     }
-    if (scale !== 1) {
-      onScaleChange?.(1);
-    }
-    if (scaleX !== 1) {
-      onScaleXChange(1);
-    }
-    if (scaleY !== 1) {
-      onScaleYChange(1);
-    }
-    if (rotationDeg !== 0) {
-      onRotationDegChange?.(0);
-    }
+
+    setBaseLayerTextureUrls((current) => {
+      const previousValue = current[activeSlot] || null;
+      if (previousValue === restoredBaseUrl) {
+        return current;
+      }
+
+      const next = { ...current };
+      if (restoredBaseUrl) {
+        next[activeSlot] = restoredBaseUrl;
+      } else {
+        delete next[activeSlot];
+      }
+      return next;
+    });
+    setPaintedBaseSlots((current) => {
+      if (!current[activeSlot]) {
+        return current;
+      }
+
+      const next = { ...current };
+      delete next[activeSlot];
+      return next;
+    });
   }, [
+    activeLoadedMesh?.baseTextureImage,
     activeSlot,
-    baseLayerTextureUrls,
-    decalTextureUrl,
-    draftUv,
-    onDraftFileNameChange,
-    onDraftTextureUrlChange,
-    onDraftUvChange,
-    onRotationDegChange,
-    onScaleChange,
-    onScaleXChange,
-    onScaleYChange,
-    paintedBaseSlots,
-    rotationDeg,
-    scale,
-    scaleX,
-    scaleY,
+    baseTextureOverrideUrl,
+    images,
+    isTextureMode,
   ]);
 
   useEffect(() => {
@@ -1895,6 +2437,7 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     soloLayerId,
     layerOverrides: cloneLayerOverrides(layerOverrides),
     extraLayers: extraLayers.map(cloneLayer),
+    appliedLayers: appliedDecals.map(cloneAppliedLayer),
     baseLayerTextureUrls: { ...baseLayerTextureUrls },
     paintedBaseSlots: { ...paintedBaseSlots },
     draftTextureUrl: decalTextureUrl,
@@ -1923,6 +2466,7 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     setSoloLayerId(snapshot.soloLayerId);
     setLayerOverrides(cloneLayerOverrides(snapshot.layerOverrides));
     setExtraLayers(snapshot.extraLayers.map(cloneLayer));
+    onReplaceAppliedLayers?.(snapshot.appliedLayers.map(cloneAppliedLayer));
     setBaseLayerTextureUrls({ ...snapshot.baseLayerTextureUrls });
     setPaintedBaseSlots({ ...snapshot.paintedBaseSlots });
     syncBaseLayerCanvases(snapshot.baseLayerTextureUrls);
@@ -1968,6 +2512,49 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     ]);
     applyHistorySnapshot(nextSnapshot);
   };
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const isUndoModifier = event.ctrlKey || event.metaKey;
+      if (!isUndoModifier) {
+        return;
+      }
+
+      const target = event.target as HTMLElement | null;
+      const tagName = target?.tagName || "";
+      const isTextEntry =
+        tagName === "TEXTAREA" ||
+        tagName === "SELECT" ||
+        (tagName === "INPUT" &&
+          !["button", "checkbox", "color", "file", "radio", "range"].includes(
+            (target as HTMLInputElement).type
+          )) ||
+        Boolean(target?.isContentEditable);
+
+      if (isTextEntry) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      if (key === "z") {
+        event.preventDefault();
+        if (event.shiftKey) {
+          handleRedo();
+        } else {
+          handleUndo();
+        }
+        return;
+      }
+
+      if (key === "y") {
+        event.preventDefault();
+        handleRedo();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [redoStack.length, undoStack.length]);
 
   const setLayerUiPatch = (layerId: string, patch: LayerOverride) => {
     setLayerOverrides((current) => ({
@@ -2082,7 +2669,49 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
       return;
     }
 
-    setLayerUiPatch(layerId, nextPatch);
+    const isExtraLayer = extraLayers.some((entry) => entry.id === layerId);
+    if (isExtraLayer) {
+      setExtraLayers((current) =>
+        current.map((entry) =>
+          entry.id === layerId
+            ? {
+                ...entry,
+                ...nextPatch,
+                ...(nextPatch.uv ? { uv: [nextPatch.uv[0], nextPatch.uv[1]] as [number, number] } : {}),
+              }
+            : entry
+        )
+      );
+      return;
+    }
+
+    onUpdateAppliedLayer?.(layerId, {
+      ...(typeof nextPatch.name === "string" ? { fileName: nextPatch.name } : {}),
+      ...(typeof nextPatch.textureUrl === "string" || nextPatch.textureUrl === null
+        ? { textureUrl: nextPatch.textureUrl }
+        : {}),
+      ...(nextPatch.uv ? { uv: [nextPatch.uv[0], nextPatch.uv[1]] as [number, number] } : {}),
+      ...(typeof nextPatch.scale === "number" ? { scale: nextPatch.scale } : {}),
+      ...(typeof nextPatch.scaleX === "number" ? { scaleX: nextPatch.scaleX } : {}),
+      ...(typeof nextPatch.scaleY === "number" ? { scaleY: nextPatch.scaleY } : {}),
+      ...(typeof nextPatch.rotationDeg === "number"
+        ? { rotationDeg: nextPatch.rotationDeg }
+        : {}),
+    });
+
+    const uiPatch: LayerOverride = {};
+    if (typeof nextPatch.opacity === "number") {
+      uiPatch.opacity = nextPatch.opacity;
+    }
+    if (typeof nextPatch.visible === "boolean") {
+      uiPatch.visible = nextPatch.visible;
+    }
+    if (typeof nextPatch.locked === "boolean") {
+      uiPatch.locked = nextPatch.locked;
+    }
+    if (Object.keys(uiPatch).length > 0) {
+      setLayerUiPatch(layerId, uiPatch);
+    }
   };
 
   const movableLayer =
@@ -2093,6 +2722,48 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     selectedLayer.uv
       ? selectedLayer
       : null;
+  const brushLayerName = locale.isRussian ? "Слой кисти" : "Brush layer";
+
+  const createTransparentCanvas = (sourceImage: CanvasImageSource | null) => {
+    const size = getCanvasImageSize(sourceImage) || { width: 1024, height: 1024 };
+    const canvas = document.createElement("canvas");
+    canvas.width = size.width;
+    canvas.height = size.height;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      return null;
+    }
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    return canvas;
+  };
+
+  const getLayerPixelPoint = (
+    pointerUv: { u: number; v: number },
+    layer: UvPortLayer,
+    image: CanvasImageSource | null,
+    canvas: HTMLCanvasElement
+  ) => {
+    const bounds = getLayerLocalBounds(layer, image);
+    const localPoint = uvToLayerLocal(pointerUv, layer);
+    if (
+      localPoint.x < bounds.left ||
+      localPoint.x > bounds.right ||
+      localPoint.y < bounds.bottom ||
+      localPoint.y > bounds.top
+    ) {
+      return null;
+    }
+
+    const width = Math.max(1e-6, bounds.right - bounds.left);
+    const height = Math.max(1e-6, bounds.top - bounds.bottom);
+    const normalizedX = (localPoint.x - bounds.left) / width;
+    const normalizedY = (bounds.top - localPoint.y) / height;
+
+    return {
+      x: Math.max(0, Math.min(canvas.width - 1, normalizedX * canvas.width)),
+      y: Math.max(0, Math.min(canvas.height - 1, normalizedY * canvas.height)),
+    };
+  };
 
   const ensureEditableBaseCanvas = () => {
     if (!activeSlot) {
@@ -2108,7 +2779,8 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
       (baseLayerTextureUrls[activeSlot] ? images[baseLayerTextureUrls[activeSlot]] : null) ||
       activeLoadedMesh?.baseTextureImage ||
       null;
-    const nextCanvas = cloneCanvasImageSourceToCanvas(sourceImage);
+    const nextCanvas =
+      cloneCanvasImageSourceToCanvas(sourceImage) || createUvMaskCanvas(activeLoadedMesh?.geometry);
     if (!nextCanvas) {
       return null;
     }
@@ -2117,33 +2789,230 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     return nextCanvas;
   };
 
+  const syncEditableLayerTexture = (layer: UvPortLayer, canvas: HTMLCanvasElement) => {
+    const dataUrl = canvas.toDataURL("image/png");
+    setImages((current) => ({
+      ...current,
+      [dataUrl]: canvas,
+    }));
+    if (layer.kind === "draft") {
+      onDraftTextureUrlChange?.(dataUrl);
+      setLayerUiPatch(layer.id, {
+        textureUrl: dataUrl,
+        ...(!layer.textureUrl ? { name: brushLayerName } : {}),
+      });
+      return dataUrl;
+    }
+
+    if (layer.kind === "decal" && onUpdateAppliedLayer) {
+      onUpdateAppliedLayer(layer.id, {
+        textureUrl: dataUrl,
+        ...(!layer.textureUrl ? { fileName: layer.name || brushLayerName } : {}),
+      });
+      setLayerUiPatch(layer.id, {
+        textureUrl: dataUrl,
+        ...(!layer.textureUrl ? { name: layer.name || brushLayerName } : {}),
+      });
+      return dataUrl;
+    }
+    commitLayerPatch(
+      layer.id,
+      {
+        textureUrl: dataUrl,
+        // @ts-expect-error fallback branch keeps legacy draft-name patching for non-standard callers.
+        ...(layer.kind === "draft" && !layer.textureUrl ? { name: locale.isRussian ? "Слой кисти" : "Brush layer" } : {}),
+      },
+      { recordHistory: false }
+    );
+    return dataUrl;
+  };
+
+  const ensurePaintableOverlayLayer = () => {
+    if (
+      selectedLayer &&
+      (selectedLayer.kind === "draft" || selectedLayer.kind === "decal") &&
+      selectedLayer.meshName === activeSlot
+    ) {
+      return selectedLayer;
+    }
+
+    if (draftLayer && draftLayer.meshName === activeSlot) {
+      setSelectedLayerId(draftLayer.id);
+      return draftLayer;
+    }
+
+    if (!activeSlot) {
+      return null;
+    }
+
+    const blankCanvas = createTransparentCanvas(activeLoadedMesh?.baseTextureImage || null);
+    if (!blankCanvas) {
+      return null;
+    }
+
+    const dataUrl = blankCanvas.toDataURL("image/png");
+    editableLayerCanvasRef.current["draft:current"] = blankCanvas;
+    setImages((current) => ({
+      ...current,
+      [dataUrl]: blankCanvas,
+    }));
+    if (onCreateGeneratedDecal) {
+      const created = onCreateGeneratedDecal({
+        fileName: brushLayerName,
+        textureUrl: dataUrl,
+        textStyle: null,
+        meshName: activeSlot,
+        uv: [0.5, 0.5],
+        scale: 1,
+        scaleX: 1,
+        scaleY: 1,
+        rotationDeg: 0,
+        projection: null,
+      });
+      if (!created?.layerId) {
+        return null;
+      }
+      const { layerId, assetId } = created;
+
+      delete editableLayerCanvasRef.current["draft:current"];
+      editableLayerCanvasRef.current[layerId] = blankCanvas;
+      setLayerUiPatch(layerId, {
+        name: brushLayerName,
+        textureUrl: dataUrl,
+        opacity: 1,
+        visible: true,
+        locked: false,
+      });
+      setSelectedLayerId(layerId);
+
+      return {
+        id: layerId,
+        assetId,
+        textStyle: null,
+        projection: null,
+        kind: "decal" as const,
+        name: brushLayerName,
+        meshName: activeSlot,
+        textureUrl: dataUrl,
+        uv: [0.5, 0.5] as [number, number],
+        scale: 1,
+        scaleX: 1,
+        scaleY: 1,
+        rotationDeg: 0,
+        opacity: 1,
+        visible: true,
+        locked: false,
+      };
+    }
+
+    if (!onDraftTextureUrlChange) {
+      delete editableLayerCanvasRef.current["draft:current"];
+      return null;
+    }
+    onDraftTextureUrlChange(dataUrl);
+    onDraftFileNameChange?.(locale.isRussian ? "Слой кисти" : "Brush layer");
+    onDraftUvChange([0.5, 0.5]);
+    onScaleChange?.(1);
+    onScaleXChange(1);
+    onScaleYChange(1);
+    onRotationDegChange?.(0);
+    setSelectedLayerId("draft:current");
+
+    return {
+      id: "draft:current",
+      assetId: draftAssetId || null,
+      textStyle: null,
+      projection: null,
+      kind: "draft" as const,
+      name: locale.isRussian ? "Слой кисти" : "Brush layer",
+      meshName: activeSlot,
+      textureUrl: dataUrl,
+      uv: [0.5, 0.5] as [number, number],
+      scale: 1,
+      scaleX: 1,
+      scaleY: 1,
+      rotationDeg: 0,
+      opacity: 1,
+      visible: true,
+      locked: false,
+    };
+  };
+
+  const ensureEditableLayerCanvas = (layer: UvPortLayer) => {
+    const existingCanvas = editableLayerCanvasRef.current[layer.id];
+    if (existingCanvas) {
+      return existingCanvas;
+    }
+
+    const sourceImage = getLayerPreviewImage(layer);
+    const nextCanvas =
+      cloneCanvasImageSourceToCanvas(sourceImage) ||
+      createTransparentCanvas(activeLoadedMesh?.baseTextureImage || null);
+    if (!nextCanvas) {
+      return null;
+    }
+
+    editableLayerCanvasRef.current[layer.id] = nextCanvas;
+    return nextCanvas;
+  };
+
   const syncPaintedBaseLayer = (slot: string, canvas: HTMLCanvasElement) => {
     const dataUrl = canvas.toDataURL("image/png");
     setBaseLayerTextureUrls((current) => ({ ...current, [slot]: dataUrl }));
     setPaintedBaseSlots((current) => ({ ...current, [slot]: true }));
-    if (decalTextureUrl !== dataUrl) {
-      onDraftTextureUrlChange?.(dataUrl);
+  };
+
+  const fillBaseLayerWithColor = () => {
+    if (!activeSlot) {
+      return false;
     }
-    onDraftFileNameChange?.(`${slot}-base-paint.png`);
-    if (draftUv[0] !== 0.5 || draftUv[1] !== 0.5) {
-      onDraftUvChange([0.5, 0.5]);
+
+    const canvas = ensureEditableBaseCanvas();
+    const context = canvas?.getContext("2d");
+    if (!canvas || !context) {
+      return false;
     }
-    if (scale !== 1) {
-      onScaleChange?.(1);
+
+    const normalizedHex = brushColor.replace("#", "");
+    const normalizedValue =
+      normalizedHex.length === 3
+        ? normalizedHex
+            .split("")
+            .map((entry) => `${entry}${entry}`)
+            .join("")
+        : normalizedHex.padEnd(6, "0").slice(0, 6);
+    const nextColor = Number.parseInt(normalizedValue, 16);
+    if (!Number.isFinite(nextColor)) {
+      return false;
     }
-    if (scaleX !== 1) {
-      onScaleXChange(1);
+
+    const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imageData.data;
+    const red = (nextColor >> 16) & 255;
+    const green = (nextColor >> 8) & 255;
+    const blue = nextColor & 255;
+
+    for (let index = 0; index < data.length; index += 4) {
+      if (data[index + 3] === 0) {
+        continue;
+      }
+
+      data[index] = red;
+      data[index + 1] = green;
+      data[index + 2] = blue;
     }
-    if (scaleY !== 1) {
-      onScaleYChange(1);
-    }
-    if (rotationDeg !== 0) {
-      onRotationDegChange?.(0);
-    }
+
+    context.putImageData(imageData, 0, 0);
+    syncPaintedBaseLayer(activeSlot, canvas);
+    return true;
   };
 
   const paintBaseLayerAt = (pointerUv: { u: number; v: number }, previousPoint?: { x: number; y: number }) => {
     if (!activeSlot) {
+      return null;
+    }
+
+    if (activeBrushPreset?.shape === "mask" && !activeBrushPresetImage) {
       return null;
     }
 
@@ -2155,9 +3024,10 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     }
 
     const distance = previousPoint ? Math.hypot(point.x - previousPoint.x, point.y - previousPoint.y) : 0;
-    const step = Math.max(1, brushSize * 0.18);
+    const step = Math.max(1, brushSize * (activeBrushPreset?.spacing || 0.18));
     const steps = previousPoint ? Math.max(1, Math.ceil(distance / step)) : 1;
-    const softness = clamp(brushSoftness / 100, 0, 1);
+    const softness =
+      activeBrushPreset?.id === "hard-round" ? 0 : clamp(brushSoftness / 100, 0, 1);
 
     context.save();
     for (let index = 0; index < steps; index += 1) {
@@ -2173,11 +3043,57 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
         paintTarget,
         radius: brushSize * 0.5,
         softness,
+        maskImage: activeBrushPreset?.shape === "mask" ? activeBrushPresetImage : null,
       });
     }
     context.restore();
 
     syncPaintedBaseLayer(activeSlot, canvas);
+    return point;
+  };
+
+  const paintEditableLayerAt = (
+    layer: UvPortLayer,
+    pointerUv: { u: number; v: number },
+    previousPoint?: { x: number; y: number }
+  ) => {
+    if (activeBrushPreset?.shape === "mask" && !activeBrushPresetImage) {
+      return null;
+    }
+
+    const canvas = ensureEditableLayerCanvas(layer);
+    const context = canvas?.getContext("2d");
+    const point = canvas ? getLayerPixelPoint(pointerUv, layer, canvas, canvas) : null;
+    if (!canvas || !context || !point) {
+      return null;
+    }
+
+    const distance = previousPoint ? Math.hypot(point.x - previousPoint.x, point.y - previousPoint.y) : 0;
+    const step = Math.max(1, brushSize * (activeBrushPreset?.spacing || 0.18));
+    const steps = previousPoint ? Math.max(1, Math.ceil(distance / step)) : 1;
+    const softness =
+      activeBrushPreset?.id === "hard-round" ? 0 : clamp(brushSoftness / 100, 0, 1);
+
+    context.save();
+    for (let index = 0; index < steps; index += 1) {
+      const progress = steps === 1 ? 1 : index / (steps - 1);
+      const stampX = previousPoint ? previousPoint.x + (point.x - previousPoint.x) * progress : point.x;
+      const stampY = previousPoint ? previousPoint.y + (point.y - previousPoint.y) * progress : point.y;
+      paintBrushStamp({
+        context,
+        x: stampX,
+        y: stampY,
+        color: brushColor,
+        isEraser: activeTool === "eraser",
+        paintTarget: "image",
+        radius: brushSize * 0.5,
+        softness,
+        maskImage: activeBrushPreset?.shape === "mask" ? activeBrushPresetImage : null,
+      });
+    }
+    context.restore();
+
+    syncEditableLayerTexture(layer, canvas);
     return point;
   };
 
@@ -2259,7 +3175,19 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
         return;
       }
 
-      if (activeTool === "brush" || activeTool === "eraser") {
+      if (
+        activeTool === "fill" &&
+        nextUv.u >= 0 &&
+        nextUv.u <= 1 &&
+        nextUv.v >= 0 &&
+        nextUv.v <= 1
+      ) {
+        pushHistorySnapshot();
+        fillBaseLayerWithColor();
+        return;
+      }
+
+      if (isTextureMode && (activeTool === "brush" || activeTool === "eraser")) {
         pushHistorySnapshot();
         const initialPoint = paintBaseLayerAt(nextUv);
         if (!initialPoint) {
@@ -2271,10 +3199,36 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
           mode: "brush",
           pointerId: event.pointerId,
           layerId: selectedLayer.id,
+          paintMode: "base",
+          paintLayer: selectedLayer,
           lastPoint: initialPoint,
         };
         return;
       }
+    }
+
+    if (!isTextureMode && (activeTool === "brush" || activeTool === "eraser")) {
+      const paintLayer = ensurePaintableOverlayLayer();
+      if (!paintLayer) {
+        return;
+      }
+
+      pushHistorySnapshot();
+      const initialPoint = paintEditableLayerAt(paintLayer, nextUv);
+      if (!initialPoint) {
+        return;
+      }
+
+      canvas.setPointerCapture(event.pointerId);
+      interactionRef.current = {
+        mode: "brush",
+        pointerId: event.pointerId,
+        layerId: paintLayer.id,
+        paintMode: "layer",
+        paintLayer,
+        lastPoint: initialPoint,
+      };
+      return;
     }
 
     if (!movableLayer || !selectedLayerPreviewImage) {
@@ -2411,10 +3365,18 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
       const rect = canvas.getBoundingClientRect();
       const pointer = { x: event.clientX - rect.left, y: event.clientY - rect.top };
       const uv = screenToUv(pointer.x, pointer.y, canvasSize, viewport);
-      const nextPoint = paintBaseLayerAt(uv, interaction.lastPoint);
+      const currentPaintLayer =
+        interaction.paintMode === "layer"
+          ? renderLayers.find((entry) => entry.id === interaction.layerId) || interaction.paintLayer
+          : interaction.paintLayer;
+      const nextPoint =
+        interaction.paintMode === "layer"
+          ? paintEditableLayerAt(currentPaintLayer, uv, interaction.lastPoint)
+          : paintBaseLayerAt(uv, interaction.lastPoint);
       if (nextPoint) {
         interactionRef.current = {
           ...interaction,
+          paintLayer: currentPaintLayer,
           lastPoint: nextPoint,
         };
       }
@@ -2611,6 +3573,18 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
   const nonBaseLayers = renderLayers.filter(
     (layer) => layer.kind === "decal" || layer.kind === "draft"
   );
+  const listedLayers = useMemo(
+    () =>
+      isTextureMode
+        ? renderLayers.filter(
+            (layer) => layer.kind === "base" || layer.kind === "uv-layout"
+          )
+        : renderLayers,
+    [isTextureMode, renderLayers]
+  );
+  const appliedLayerOrder = renderLayers
+    .filter((layer) => layer.kind === "decal")
+    .map((layer) => layer.id);
   const opacityPercent = Math.round((selectedLayer?.opacity ?? 1) * 100);
   const isStructuralLayer =
     selectedLayer?.kind === "base" || selectedLayer?.kind === "uv-layout";
@@ -2621,6 +3595,159 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
       selectedLayer.kind !== "uv-layout" &&
       selectedLayer.textureUrl
   );
+  const canApplyDraftLayer = hasDraftLayer && Boolean(onApply);
+  const isTextCreationAvailable = true;
+  const canCreateTextLayer = Boolean(onCreateGeneratedDecal) && Boolean(textValue.trim());
+
+  const getBaseLayerId = () =>
+    renderLayers.find((layer) => layer.kind === "base" && layer.meshName === activeSlot)?.id ||
+    renderLayers.find((layer) => layer.kind === "base")?.id ||
+    null;
+
+  const handleSelectTool = (tool: UvPortTool) => {
+    setActiveTool(tool);
+    if (!BASE_PAINT_TOOLS.has(tool)) {
+      return;
+    }
+
+    if (!isTextureMode && (tool === "brush" || tool === "eraser")) {
+      const nextOverlayLayer =
+        (selectedLayer &&
+          (selectedLayer.kind === "draft" || selectedLayer.kind === "decal") &&
+          selectedLayer.meshName === activeSlot
+          ? selectedLayer
+          : draftLayer) ||
+        null;
+      if (nextOverlayLayer) {
+        setSelectedLayerId(nextOverlayLayer.id);
+      }
+      return;
+    }
+
+    if (selectedLayer?.kind === "base") {
+      return;
+    }
+
+    const baseLayerId = getBaseLayerId();
+    if (baseLayerId) {
+      setSelectedLayerId(baseLayerId);
+    }
+  };
+
+  const handleApplyDraftLayer = () => {
+    if (!hasDraftLayer) {
+      return;
+    }
+
+    pushHistorySnapshot();
+    const nextLayerId = onApply();
+    if (typeof nextLayerId === "string" && nextLayerId) {
+      setSelectedLayerId(nextLayerId);
+    }
+  };
+
+  const handleCreateTextLayer = async () => {
+    if (!canCreateTextLayer || !onCreateGeneratedDecal) {
+      return;
+    }
+
+    await ensureTextFontLoaded({
+      fontFamily: textFontFamily,
+      fontSize: textFontSize,
+      sample: textValue,
+    });
+
+    const generated = createTextDecalTexture({
+      text: textValue,
+      fontFamily: textFontFamily,
+      fontSize: textFontSize,
+      color: textColor,
+      isRussian: locale.isRussian,
+    });
+    if (!generated) {
+      return;
+    }
+
+    pushHistorySnapshot();
+    const created = onCreateGeneratedDecal({
+      ...generated,
+      ...(activeSlot ? { meshName: activeSlot, uv: draftUv } : {}),
+    });
+    if (created?.layerId) {
+      setSelectedLayerId(created.layerId);
+    }
+    setActiveTool("transform");
+  };
+
+  useEffect(() => {
+    if (!selectedTextLayer?.textStyle) {
+      return;
+    }
+
+    const normalizedText = textValue.replace(/\r\n/g, "\n").trim();
+    if (!normalizedText) {
+      return;
+    }
+
+    const currentTextStyle = selectedTextLayer.textStyle;
+    if (
+      currentTextStyle.text === normalizedText &&
+      currentTextStyle.fontFamily === textFontFamily &&
+      currentTextStyle.fontSize === textFontSize &&
+      currentTextStyle.color === textColor
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      await ensureTextFontLoaded({
+        fontFamily: textFontFamily,
+        fontSize: textFontSize,
+        sample: normalizedText,
+      });
+      if (cancelled) {
+        return;
+      }
+
+      const generated = createTextDecalTexture({
+        text: normalizedText,
+        fontFamily: textFontFamily,
+        fontSize: textFontSize,
+        color: textColor,
+        isRussian: locale.isRussian,
+      });
+      if (!generated || cancelled) {
+        return;
+      }
+
+      if (selectedTextLayer.kind === "draft") {
+        onDraftTextureUrlChange?.(generated.textureUrl);
+        onDraftFileNameChange?.(generated.fileName);
+        return;
+      }
+
+      onUpdateAppliedLayer?.(selectedTextLayer.id, {
+        fileName: generated.fileName,
+        textureUrl: generated.textureUrl,
+        textStyle: generated.textStyle,
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    locale.isRussian,
+    onDraftFileNameChange,
+    onDraftTextureUrlChange,
+    onUpdateAppliedLayer,
+    selectedTextLayer,
+    textColor,
+    textFontFamily,
+    textFontSize,
+    textValue,
+  ]);
 
   const applyCroppedLayerToState = (
     layer: UvPortLayer,
@@ -2717,8 +3844,31 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
       !selectedLayer ||
       selectedLayer.kind === "base" ||
       selectedLayer.kind === "uv-layout" ||
-      !selectedLayer.textureUrl
+      !selectedLayer.textureUrl ||
+      !selectedLayer.meshName ||
+      !selectedLayer.uv
     ) {
+      return;
+    }
+
+    if (onCreateDecalLayer) {
+      pushHistorySnapshot();
+      const nextLayerId = onCreateDecalLayer({
+        assetId: selectedLayer.assetId || draftAssetId || null,
+        fileName: `${selectedLayer.name} ${locale.copySuffix}`,
+        meshName: selectedLayer.meshName,
+        uv: [clamp01(selectedLayer.uv[0] + 0.02), clamp01(selectedLayer.uv[1] - 0.02)],
+        scale: selectedLayer.scale,
+        scaleX: selectedLayer.scaleX,
+        scaleY: selectedLayer.scaleY,
+        rotationDeg: selectedLayer.rotationDeg,
+        textureUrl: selectedLayer.textureUrl,
+        textStyle: selectedLayer.textStyle || null,
+        projection: selectedLayer.projection || null,
+      });
+      if (nextLayerId) {
+        setSelectedLayerId(nextLayerId);
+      }
       return;
     }
 
@@ -2820,7 +3970,7 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
 
   const handleSave = () => {
     if (hasDraftLayer) {
-      onApply();
+      handleApplyDraftLayer();
     }
     onCloseRequested?.();
   };
@@ -2847,14 +3997,7 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
         style={editorWindow.frameStyle}
       >
         <div className="uv-editor__header" {...editorWindow.headerProps}>
-          <div className="uv-editor__title-row">
-            <span className="uv-editor__title-accent">UV</span>
-            <div className="uv-editor__title-copy">
-              <div className="uv-editor__title-text">
-                {copy.uvEditorTitle} <span>({renderLayers.length})</span>
-              </div>
-            </div>
-          </div>
+          <div className="uv-editor__header-spacer" aria-hidden />
           <button
             type="button"
             className="uv-editor__close"
@@ -2867,17 +4010,18 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
           <div className="uv-editor__workspace">
             <section className="uv-editor__main">
               <div className="uv-editor__layers-panel">
-                <div className="uv-editor__summary uv-editor__summary--compact">
-                  <div className="uv-editor__status">{meshStatus}</div>
-                  <div className="uv-editor__meta">{meshMeta}</div>
-                </div>
                 <div className="uv-editor__sidebar-header">
                   <div className="uv-editor__sidebar-title">{locale.layersTitle}</div>
                 </div>
                 <div className="uv-editor__layers">
-                {renderLayers.map((layer) => {
+                {listedLayers.map((layer) => {
                   const layerOpacity = Math.round(layer.opacity * 100);
                   const isRemovableLayer = layer.kind === "draft" || layer.kind === "decal";
+                  const appliedOrderIndex =
+                    layer.kind === "decal" ? appliedLayerOrder.indexOf(layer.id) : -1;
+                  const canMoveLayerUp = appliedOrderIndex > 0;
+                  const canMoveLayerDown =
+                    appliedOrderIndex >= 0 && appliedOrderIndex < appliedLayerOrder.length - 1;
                   return (
                     <div
                       key={layer.id}
@@ -2917,6 +4061,36 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
                         <span className="uv-editor__layer-action uv-editor__layer-action--label">
                           {layerOpacity}%
                         </span>
+                        {layer.kind === "decal" ? (
+                          <>
+                            <button
+                              type="button"
+                              className="uv-editor__layer-action"
+                              disabled={!canMoveLayerUp || !onMoveAppliedLayer}
+                              {...getTooltipProps(locale.moveLayerUpHint)}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                pushHistorySnapshot();
+                                onMoveAppliedLayer?.(layer.id, "up");
+                              }}
+                            >
+                              ↑
+                            </button>
+                            <button
+                              type="button"
+                              className="uv-editor__layer-action"
+                              disabled={!canMoveLayerDown || !onMoveAppliedLayer}
+                              {...getTooltipProps(locale.moveLayerDownHint)}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                pushHistorySnapshot();
+                                onMoveAppliedLayer?.(layer.id, "down");
+                              }}
+                            >
+                              ↓
+                            </button>
+                          </>
+                        ) : null}
                         <button
                           type="button"
                           className={`uv-editor__layer-action${layer.visible ? " uv-editor__layer-action--active" : ""}`}
@@ -2955,7 +4129,7 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
                   );
                 })}
               </div>
-              {!nonBaseLayers.length ? (
+              {!isTextureMode && !nonBaseLayers.length ? (
                 <div className="uv-editor__layers-empty">{locale.layersEmpty}</div>
               ) : null}
               </div>
@@ -2974,16 +4148,40 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
                   <button
                     type="button"
                     className="uv-editor__tool"
-                    onClick={extractedControls?.onUpload}
-                    {...getTooltipProps(locale.addHint)}
+                    onClick={handleApplyDraftLayer}
+                    disabled={!canApplyDraftLayer}
+                    {...getTooltipProps(locale.applyHint)}
                   >
-                    {locale.toolbarAdd}
+                    {locale.toolbarApply}
                   </button>
                 </div>
               </div>
 
               <div className="uv-editor__controls">
                 <div className="uv-editor__control-panel uv-editor__control-panel--meta">
+                  {extractedControls?.onSwitchMode ? (
+                    <div className="uv-editor__control-group">
+                      <div className="uv-editor__control-label">{locale.mode}</div>
+                      <div className="uv-editor__chip-row">
+                        <button
+                          type="button"
+                          className={`uv-editor__tool uv-editor__tool--secondary${extractedControls.mode === "decal" ? " uv-editor__tool--active" : ""}`}
+                          {...getTooltipProps(locale.modeDecalHint)}
+                          onClick={() => extractedControls.onSwitchMode?.("decal")}
+                        >
+                          {extractedControls.labels.decal}
+                        </button>
+                        <button
+                          type="button"
+                          className={`uv-editor__tool uv-editor__tool--secondary${extractedControls.mode === "texture" ? " uv-editor__tool--active" : ""}`}
+                          {...getTooltipProps(locale.modeTextureHint)}
+                          onClick={() => extractedControls.onSwitchMode?.("texture")}
+                        >
+                          {extractedControls.labels.texture}
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
                   <div className="uv-editor__control-group">
                     <div className="uv-editor__control-label">{locale.target}</div>
                     <div className="uv-editor__selected-target">
@@ -3013,6 +4211,37 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
                       <span className="uv-editor__value-chip">{opacityPercent}%</span>
                     </div>
                   </div>
+                  {extractedControls ? (
+                    <div className="uv-editor__control-group">
+                      <div className="uv-editor__control-label">{locale.currentFile}</div>
+                      <div
+                        className="uv-editor__selected-target"
+                        {...getTooltipProps(locale.currentFileTooltip(extractedControls.fileLabel))}
+                      >
+                        {extractedControls.fileLabel}
+                      </div>
+                      <div className="uv-editor__control-actions">
+                        <button
+                          type="button"
+                          className="uv-editor__tool uv-editor__tool--secondary"
+                          {...getTooltipProps(locale.addHint)}
+                          onClick={extractedControls.onUpload}
+                          disabled={!extractedControls.onUpload}
+                        >
+                          {extractedControls.labels.upload}
+                        </button>
+                        <button
+                          type="button"
+                          className="uv-editor__tool uv-editor__tool--secondary"
+                          {...getTooltipProps(locale.removeAssetHint)}
+                          onClick={extractedControls.onRemove}
+                          disabled={!extractedControls.onRemove || !extractedControls.hasAsset}
+                        >
+                          {extractedControls.labels.remove}
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className="uv-editor__control-panel uv-editor__control-panel--modes">
@@ -3025,13 +4254,14 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
                         ["brush", locale.brushTool],
                         ["eraser", locale.eraser],
                         ["eyedropper", locale.eyedropper],
+                        ["fill", locale.fillTool],
                       ] as [UvPortTool, string][]).map(([tool, label]) => (
                         <button
                           key={tool}
                           type="button"
                           className={`uv-editor__tool uv-editor__tool--secondary${activeTool === tool ? " uv-editor__tool--active" : ""}`}
                           {...getTooltipProps(toolHints[tool])}
-                          onClick={() => setActiveTool(tool)}
+                          onClick={() => handleSelectTool(tool)}
                         >
                           {label}
                         </button>
@@ -3061,6 +4291,62 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
                 </div>
 
                 <div className="uv-editor__control-panel uv-editor__control-panel--paint">
+                  <div className="uv-editor__control-group">
+                    <div className="uv-editor__control-label">{locale.brushPresetType}</div>
+                    <div className="uv-editor__chip-row">
+                      {([
+                        ["brush", locale.brushPresets],
+                        ["stamp", locale.stampPresets],
+                      ] as [BrushPresetKind, string][]).map(([kind, label]) => (
+                        <button
+                          key={kind}
+                          type="button"
+                          className={`uv-editor__tool uv-editor__tool--secondary${brushPresetKind === kind ? " uv-editor__tool--active" : ""}`}
+                          {...getTooltipProps(locale.brushPresetTypeHint)}
+                          onClick={() => setBrushPresetKind(kind)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="uv-editor__control-group">
+                    <div className="uv-editor__control-label">{locale.brushPreset}</div>
+                    <select
+                      className="uv-editor__text-select"
+                      value={activeBrushPreset?.id || ""}
+                      {...getTooltipProps(locale.brushPresetHint)}
+                      onChange={(event) => setBrushPresetId(event.target.value)}
+                    >
+                      {activeBrushPresetOptions.map((preset) => (
+                        <option key={preset.id} value={preset.id}>
+                          {`${preset.group} - ${preset.name}`}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {activeBrushPreset ? (
+                    <div className="uv-editor__brush-preview">
+                      <div className="uv-editor__brush-preview-swatch">
+                        {activeBrushPreset.previewSrc ? (
+                          <img src={activeBrushPreset.previewSrc} alt={activeBrushPreset.name} />
+                        ) : (
+                          <div
+                            className={`uv-editor__brush-preview-dot${activeBrushPreset.id === "hard-round" ? " uv-editor__brush-preview-dot--hard" : ""}`}
+                          />
+                        )}
+                      </div>
+                      <div className="uv-editor__brush-preview-meta">
+                        <div className="uv-editor__brush-preview-title">{activeBrushPreset.name}</div>
+                        <div className="uv-editor__brush-preview-subtitle">
+                          {`${activeBrushPreset.group} · ${activeBrushPreset.source}`}
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+
                   <div className="uv-editor__control-group">
                     <div className="uv-editor__control-label">{locale.brush}</div>
                     <div className="uv-editor__paint-row">
@@ -3097,6 +4383,80 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
                   </div>
 
                 </div>
+
+                {isTextCreationAvailable ? (
+                  <div className="uv-editor__control-panel uv-editor__control-panel--text">
+                    <div className="uv-editor__control-group">
+                      <div className="uv-editor__control-label">{locale.textTitle}</div>
+                      <textarea
+                        className="uv-editor__text-input"
+                        value={textValue}
+                        placeholder={locale.textPlaceholder}
+                        {...getTooltipProps(locale.textPlaceholderHint)}
+                        onChange={(event) => setTextValue(event.target.value)}
+                      />
+                    </div>
+
+                    <div className="uv-editor__text-grid">
+                      <div className="uv-editor__control-group">
+                        <div className="uv-editor__control-label">{locale.textFont}</div>
+                        <select
+                          className="uv-editor__text-select"
+                          value={textFontFamily}
+                          style={{ fontFamily: textFontFamily }}
+                          {...getTooltipProps(locale.textFontHint)}
+                          onChange={(event) => setTextFontFamily(event.target.value)}
+                        >
+                          {TEXT_FONT_OPTIONS.map((option) => (
+                            <option key={option.label} value={option.value} style={{ fontFamily: option.value }}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="uv-editor__control-group">
+                        <div className="uv-editor__control-label">{locale.textColor}</div>
+                        <input
+                          className="uv-editor__brush-color uv-editor__brush-color--text"
+                          type="color"
+                          value={textColor}
+                          {...getTooltipProps(locale.textColorHint)}
+                          onChange={(event) => setTextColor(event.target.value)}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="uv-editor__control-group">
+                      <div className="uv-editor__control-label">{locale.textSize}</div>
+                      <div className="uv-editor__slider-row">
+                        <input
+                          className="uv-editor__slider"
+                          type="range"
+                          min="24"
+                          max="180"
+                          step="1"
+                          value={textFontSize}
+                          {...getTooltipProps(locale.textSizeHint)}
+                          onChange={(event) => setTextFontSize(Number(event.target.value))}
+                        />
+                        <span className="uv-editor__value-chip">{textFontSize}px</span>
+                      </div>
+                    </div>
+
+                    <div className="uv-editor__control-actions">
+                      <button
+                        type="button"
+                        className="uv-editor__tool uv-editor__tool--secondary"
+                        {...getTooltipProps(locale.addTextHint)}
+                        onClick={handleCreateTextLayer}
+                        disabled={!canCreateTextLayer}
+                      >
+                        {locale.addText}
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
 
                 <div className="uv-editor__control-panel uv-editor__control-panel--actions">
                   <div className="uv-editor__control-actions">

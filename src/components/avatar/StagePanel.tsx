@@ -1,4 +1,8 @@
-import { Suspense, type MutableRefObject } from "react";
+import {
+  Suspense,
+  useState,
+  type MutableRefObject,
+} from "react";
 import { Canvas, type ThreeEvent } from "@react-three/fiber";
 import { ContactShadows, OrbitControls } from "@react-three/drei";
 import { Camera, Group, Mesh, MOUSE, Scene, Vector3, WebGLRenderer } from "three";
@@ -8,6 +12,7 @@ import {
   UvEditorBridge,
   type UvDecalEditorProps,
 } from "../UvEditorBridge";
+import { useFloatingWindow } from "../uv-editor-port/useFloatingWindow";
 import {
   AvatarHeadMaskLayer,
   AvatarModel,
@@ -16,7 +21,7 @@ import {
   SceneBridge,
   SceneLoader,
 } from "./SceneComponents";
-import { ExportPreviewModal, SettingsGearIcon } from "./UiComponents";
+import { ExportPreviewModal, EyedropperIcon, PaintPaletteIcon } from "./UiComponents";
 import { HAIR_COLOR_SWATCHES } from "./shared";
 import type { AppliedUvDecal, MeshSlot, MeshTintMap, UiCopy, UiLocale } from "./shared";
 
@@ -69,6 +74,8 @@ export type StagePanelProps = {
   isAvatarStatic: boolean;
   isStickerDragging: boolean;
   appliedUvDecals: readonly AppliedUvDecal[];
+  appliedUvTextures: readonly AppliedUvDecal[];
+  baseTextureOverrideUrls: Partial<Record<MeshSlot, string>>;
   selectedEyebrowColor: string;
   decalTextureUrl: string | null;
   stickerTargetMesh: Mesh | null;
@@ -91,6 +98,21 @@ export type StagePanelProps = {
   exportFileName: string;
   onCloseExportModal: () => void;
 };
+
+type EyeDropperResult = {
+  sRGBHex: string;
+};
+
+type EyeDropperInstance = {
+  open: () => Promise<EyeDropperResult>;
+};
+
+type EyeDropperWindow = Window & {
+  EyeDropper?: new () => EyeDropperInstance;
+};
+
+const clampColorPanelPosition = (value: number, min: number, max: number) =>
+  Math.max(min, Math.min(max, value));
 
 export function StagePanel({
   copy,
@@ -122,6 +144,8 @@ export function StagePanel({
   isAvatarStatic,
   isStickerDragging,
   appliedUvDecals,
+  appliedUvTextures,
+  baseTextureOverrideUrls,
   selectedEyebrowColor,
   decalTextureUrl,
   stickerTargetMesh,
@@ -139,10 +163,32 @@ export function StagePanel({
   exportFileName,
   onCloseExportModal,
 }: StagePanelProps) {
+  const [isPickingColor, setIsPickingColor] = useState(false);
   const selectedDecalFileName =
     paintPanelProps.decalFiles.find((file) => file.isSelected)?.fileName ||
     paintPanelProps.decalFiles[paintPanelProps.decalFiles.length - 1]?.fileName ||
     paintPanelProps.copy.notLoaded;
+  const supportsEyeDropper =
+    typeof window !== "undefined" && "EyeDropper" in (window as EyeDropperWindow);
+  const colorPanelWindow = useFloatingWindow({
+    initialRect: () => {
+      const height =
+        typeof window === "undefined"
+          ? 520
+          : Math.min(560, Math.max(320, Math.round(window.innerHeight * 0.72)));
+      return {
+        left: 14,
+        top:
+          typeof window === "undefined"
+            ? 100
+            : Math.max(92, Math.round((window.innerHeight - height) * 0.18)),
+        width: 72,
+        height,
+      };
+    },
+    minWidth: 72,
+    minHeight: 220,
+  });
   const extractedControls = {
     mode: paintPanelProps.isTextureUvEditorOpen ? "texture" : "decal",
     onSwitchMode: (mode: "decal" | "texture") => {
@@ -183,6 +229,25 @@ export function StagePanel({
   } as const;
   const shouldShowEditor = USE_EXTRACTED_UV_EDITOR_PORT ? isPaintPanelOpen : showUvEditor;
 
+  const handlePickColorFromScreen = async () => {
+    if (!supportsEyeDropper || isPickingColor) {
+      return;
+    }
+
+    try {
+      setIsPickingColor(true);
+      const picker = new (window as EyeDropperWindow).EyeDropper!();
+      const result = await picker.open();
+      if (result?.sRGBHex) {
+        onSelectColor(result.sRGBHex);
+      }
+    } catch {
+      // User cancel is expected here.
+    } finally {
+      setIsPickingColor(false);
+    }
+  };
+
   return (
     <section className="stage-panel">
       <button
@@ -192,7 +257,7 @@ export function StagePanel({
         onClick={onTogglePaintPanel}
       >
         <span className="paint-toggle-button__icon">
-          <SettingsGearIcon />
+          <PaintPaletteIcon />
         </span>
       </button>
       <div className="stage-toolbar">
@@ -264,6 +329,8 @@ export function StagePanel({
                   replaceTextureRotationDeg={replaceRotationDeg}
                   enableIdleAnimation={!isAvatarStatic}
                   appliedUvDecals={appliedUvDecals}
+                  appliedUvTextures={appliedUvTextures}
+                  baseTextureOverrideUrls={baseTextureOverrideUrls}
                 />
               ) : (
                 <PlaceholderAvatar />
@@ -284,6 +351,8 @@ export function StagePanel({
                   replaceTextureRotationDeg={replaceRotationDeg}
                   enableIdleAnimation={!isAvatarStatic}
                   appliedUvDecals={appliedUvDecals}
+                  appliedUvTextures={appliedUvTextures}
+                  baseTextureOverrideUrls={baseTextureOverrideUrls}
                 />
               ))}
 
@@ -357,18 +426,63 @@ export function StagePanel({
       </div>
 
       {showColorPanel ? (
-        <div className="hair-color-panel" aria-label={colorPanelLabel}>
-          {HAIR_COLOR_SWATCHES.map((color) => (
+        <div
+          className={`hair-color-panel${colorPanelWindow.isDragging ? " hair-color-panel--dragging" : ""}`}
+          aria-label={colorPanelLabel}
+          style={colorPanelWindow.frameStyle}
+        >
+          <div
+            className="hair-color-panel__header"
+            {...colorPanelWindow.headerProps}
+            title={locale === "ru" ? "Перетащить палитру" : "Drag palette"}
+            aria-label={locale === "ru" ? "Перетащить палитру" : "Drag palette"}
+          >
+            <span className="hair-color-panel__grip" aria-hidden>
+              ⋮⋮
+            </span>
             <button
-              key={color}
               type="button"
-              className={`hair-color-dot${selectedColor === color ? " hair-color-dot--active" : ""}`}
-              onClick={() => onSelectColor(color)}
-              style={{ background: color }}
-              title={color}
-              aria-label={`${colorPanelLabel} ${color}`}
-            />
-          ))}
+              className="hair-color-panel__eyedropper"
+              onMouseDown={(event) => {
+                event.stopPropagation();
+              }}
+              onClick={handlePickColorFromScreen}
+              disabled={!supportsEyeDropper || isPickingColor}
+              title={
+                !supportsEyeDropper
+                  ? locale === "ru"
+                    ? "Пипетка недоступна в этом браузере"
+                    : "Eyedropper is not available in this browser"
+                  : locale === "ru"
+                    ? "Пипетка: взять цвет с экрана"
+                    : "Eyedropper: pick a color from the screen"
+              }
+              aria-label={
+                !supportsEyeDropper
+                  ? locale === "ru"
+                    ? "Пипетка недоступна"
+                    : "Eyedropper unavailable"
+                  : locale === "ru"
+                    ? "Пипетка"
+                    : "Eyedropper"
+              }
+          >
+            <EyedropperIcon />
+          </button>
+          </div>
+          <div className="hair-color-panel__swatches">
+            {HAIR_COLOR_SWATCHES.map((color) => (
+              <button
+                key={color}
+                type="button"
+                className={`hair-color-dot${selectedColor === color ? " hair-color-dot--active" : ""}`}
+                onClick={() => onSelectColor(color)}
+                style={{ background: color }}
+                title={color}
+                aria-label={`${colorPanelLabel} ${color}`}
+              />
+            ))}
+          </div>
         </div>
       ) : null}
 

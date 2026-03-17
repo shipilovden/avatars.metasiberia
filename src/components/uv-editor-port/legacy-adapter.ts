@@ -12,6 +12,7 @@ export const createUvPortDocumentFromLegacyProps = (
     selectedSlot,
     appliedDecals,
     decalTextureUrl,
+    draftAssetId,
     draftFileName,
     draftUv,
     scale,
@@ -59,6 +60,8 @@ export const createUvPortDocumentFromLegacyProps = (
         .filter((entry) => entry.meshName === activeSlot)
         .map<UvPortLayer>((entry, index) => ({
           id: entry.id,
+          assetId: entry.assetId || null,
+          textStyle: entry.textStyle || null,
           kind: "decal",
           name:
             entry.fileName?.trim() ||
@@ -80,6 +83,8 @@ export const createUvPortDocumentFromLegacyProps = (
     activeSlot && decalTextureUrl
       ? {
           id: "draft:current",
+          assetId: draftAssetId || null,
+          textStyle: null,
           kind: "draft",
           name: draftFileName?.trim() || (isRussian ? "Черновик" : "Draft layer"),
           meshName: activeSlot,
@@ -99,7 +104,7 @@ export const createUvPortDocumentFromLegacyProps = (
 
   return {
     meshName: activeSlot,
-    selectedLayerId: draftLayer?.id || meshLayers[meshLayers.length - 1]?.id || baseLayer.id,
+    selectedLayerId: meshLayers[meshLayers.length - 1]?.id || draftLayer?.id || baseLayer.id,
     activeTool: "transform",
     paintTarget: "image",
     cropShape: "rect",

@@ -20,6 +20,7 @@ import {
 } from "three";
 import { clone } from "three/examples/jsm/utils/SkeletonUtils.js";
 import {
+  getCanonicalMeshSlot,
   POSITION_OFFSET,
   SLOT_NAMES,
   getAppliedUvDecalsForMesh,
@@ -404,6 +405,8 @@ export function AvatarModel({
   replaceTextureRotationDeg = 0,
   enableIdleAnimation = true,
   appliedUvDecals = [],
+  appliedUvTextures = [],
+  baseTextureOverrideUrls,
 }: {
   modelUrl: string;
   includeMeshes?: readonly MeshSlot[];
@@ -418,6 +421,8 @@ export function AvatarModel({
   replaceTextureRotationDeg?: number;
   enableIdleAnimation?: boolean;
   appliedUvDecals?: readonly AppliedUvDecal[];
+  appliedUvTextures?: readonly AppliedUvDecal[];
+  baseTextureOverrideUrls?: Partial<Record<MeshSlot, string>>;
 }) {
   const { scene } = useGLTF(modelUrl) as { scene: Group };
   const [replacementTexture, setReplacementTexture] = useState<Texture | null>(null);
@@ -465,6 +470,8 @@ export function AvatarModel({
 
     const bake = async () => {
       const nextMaps: Record<string, Texture> = {};
+      const includeSet = includeMeshes ? new Set(includeMeshes) : null;
+      const hiddenSet = new Set(hiddenMeshes || []);
       const replaceSet = new Set(replaceTextureMeshes || []);
 
       const tasks: Promise<void>[] = [];
@@ -478,25 +485,45 @@ export function AvatarModel({
           return;
         }
 
-        const shouldReplace = Boolean(replacementTexture && replaceSet.has(mesh.name as MeshSlot));
+        const canonicalMeshSlot = getCanonicalMeshSlot(mesh.name) || (mesh.name as MeshSlot);
+        const isVisibleForScene = includeSet
+          ? includeSet.has(canonicalMeshSlot)
+          : hiddenSet.size > 0
+            ? !hiddenSet.has(canonicalMeshSlot)
+            : true;
+        if (!isVisibleForScene) {
+          return;
+        }
+
+        const shouldReplace = Boolean(replacementTexture && replaceSet.has(canonicalMeshSlot));
+        const texturesForMesh = getAppliedUvDecalsForMesh(appliedUvTextures, mesh.name);
         const decalsForMesh = getAppliedUvDecalsForMesh(appliedUvDecals, mesh.name);
-        if (!shouldReplace && decalsForMesh.length === 0) {
+        const baseTextureOverrideUrl = baseTextureOverrideUrls?.[canonicalMeshSlot] || null;
+        if (
+          !shouldReplace &&
+          texturesForMesh.length === 0 &&
+          decalsForMesh.length === 0 &&
+          !baseTextureOverrideUrl
+        ) {
           return;
         }
 
         const baseMap = mesh.material ? getPrimaryTextureMap(mesh.material) : null;
-        if (!baseMap) {
+        if (!baseMap && !baseTextureOverrideUrl) {
           return;
         }
 
         tasks.push(
           buildCombinedPreviewTexture({
             baseMap,
+            baseTextureOverrideUrl,
+            mesh: mesh as Mesh,
             replacementTexture: shouldReplace ? replacementTexture : null,
             replaceTextureScale,
             replaceTextureScaleX,
             replaceTextureScaleY,
             replaceTextureRotationDeg,
+            appliedUvTextures: texturesForMesh,
             appliedUvDecals: decalsForMesh,
           }).then((texture) => {
             if (texture) {
@@ -524,12 +551,16 @@ export function AvatarModel({
     };
   }, [
     appliedUvDecals,
+    appliedUvTextures,
     replaceTextureMeshes,
+    includeMeshes,
+    hiddenMeshes,
     replaceTextureRotationDeg,
     replaceTextureScale,
     replaceTextureScaleX,
     replaceTextureScaleY,
     replacementTexture,
+    baseTextureOverrideUrls,
     scene,
   ]);
 
@@ -557,18 +588,26 @@ export function AvatarModel({
 
       mesh.castShadow = true;
       mesh.receiveShadow = true;
-      mesh.userData = { ...(mesh.userData || {}), avatarSurface: true };
+      const canonicalMeshSlot = mesh.name ? getCanonicalMeshSlot(mesh.name) : null;
 
       if (includeSet) {
-        mesh.visible = includeSet.has(mesh.name as MeshSlot);
+        mesh.visible = includeSet.has((canonicalMeshSlot || mesh.name) as MeshSlot);
       } else if (hiddenSet.size > 0) {
-        mesh.visible = !hiddenSet.has(mesh.name as MeshSlot);
+        mesh.visible = !hiddenSet.has((canonicalMeshSlot || mesh.name) as MeshSlot);
       }
 
-      const tintEntry = mesh.name ? tintByMesh?.[mesh.name] : null;
+      mesh.userData = {
+        ...(mesh.userData || {}),
+        avatarSurface: mesh.visible !== false,
+      };
+
+      const tintEntry =
+        mesh.name
+          ? tintByMesh?.[mesh.name] || (canonicalMeshSlot ? tintByMesh?.[canonicalMeshSlot] : null)
+          : null;
       const bakedPreviewMap = mesh.name ? bakedPreviewMaps[mesh.name] : null;
       const shouldReplaceTexture =
-        replacementTexture && replaceSet.has(mesh.name as MeshSlot);
+        replacementTexture && replaceSet.has((canonicalMeshSlot || mesh.name) as MeshSlot);
       if (bakedPreviewMap && mesh.material) {
         mesh.material = applyBakedPreviewMap(mesh.material, bakedPreviewMap);
       } else if (shouldReplaceTexture && mesh.material) {
@@ -581,7 +620,7 @@ export function AvatarModel({
           replaceTextureRotationDeg,
         });
       }
-      if (tintEntry && mesh.material) {
+      if (tintEntry && mesh.material && !(bakedPreviewMap && tintEntry.mode === "flat")) {
         mesh.material = cloneMaterialWithTint(
           mesh.material,
           tintEntry,
@@ -778,9 +817,10 @@ export function AutoStickerProjector({
     raycaster.setFromCamera(centerNdc, camera);
     const hits = raycaster
       .intersectObjects(scene.children, true)
-      .filter((hit) =>
-        Boolean((hit.object as { userData?: Record<string, unknown> }).userData?.avatarSurface)
-      );
+      .filter((hit) => {
+        const object = hit.object as { visible?: boolean; userData?: Record<string, unknown> };
+        return object.visible !== false && Boolean(object.userData?.avatarSurface);
+      });
 
     const hit = hits[0];
     if (!hit) {
