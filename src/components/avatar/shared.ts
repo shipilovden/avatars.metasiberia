@@ -3,6 +3,8 @@ import assetDataset from "../../data/assets-catalog.json";
 import localAssetCapabilitiesManifest from "../../data/generated/local-asset-capabilities.json";
 import localLibraryManifest from "../../data/generated/local-library-manifest.json";
 import type { DesignLayerStyle } from "../uv-editor-port/design-presets";
+import type { PrintModeId } from "../uv-editor-port/print-mode-presets";
+import type { PrintTextureStyle } from "../uv-editor-port/print-texture";
 
 export type SupportedType =
   | "top"
@@ -109,6 +111,31 @@ export type TextDecalStyle = {
   fontFamily: string;
   fontSize: number;
   color: string;
+  strokeColor: string;
+  strokeWidth: number;
+  shadowColor: string;
+  shadowOpacity: number;
+  shadowBlur: number;
+  shadowOffsetX: number;
+  shadowOffsetY: number;
+  printTexture: PrintTextureStyle;
+  printModeId: PrintModeId | null;
+};
+
+export const getDefaultTextStrokeStyle = () => ({
+  strokeColor: "#ffffff",
+  strokeWidth: 0,
+});
+
+export const getDefaultTextShadowStyle = (fontSize: number) => {
+  const safeFontSize = Math.max(18, Math.min(220, Math.round(fontSize)));
+  return {
+    shadowColor: "#000000",
+    shadowOpacity: 0.18,
+    shadowBlur: Math.max(2, Number.parseFloat((safeFontSize * 0.08).toFixed(1))),
+    shadowOffsetX: 0,
+    shadowOffsetY: Math.max(1, Number.parseFloat((safeFontSize * 0.03).toFixed(1))),
+  };
 };
 
 export type DecalProjectionBasis = {

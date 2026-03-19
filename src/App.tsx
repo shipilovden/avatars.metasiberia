@@ -6,6 +6,8 @@ import type { PaintPanelProps } from "./components/PaintPanel";
 import type { UvDecalEditorProps } from "./components/UvDecalEditor";
 import { sanitizeDesignLayerStyle } from "./components/uv-editor-port/design-presets";
 import type { DesignLayerStyle } from "./components/uv-editor-port/design-presets";
+import { sanitizePrintModeId } from "./components/uv-editor-port/print-mode-presets";
+import { sanitizePrintTextureStyle } from "./components/uv-editor-port/print-texture";
 import { AssetSidebar } from "./components/avatar/AssetSidebar";
 import { StagePanel } from "./components/avatar/StagePanel";
 import {
@@ -16,6 +18,8 @@ import {
   postProcessExportedAvatarBlob,
 } from "./components/avatar/export-utils";
 import {
+  getDefaultTextShadowStyle,
+  getDefaultTextStrokeStyle,
   datasetAssets,
   DEFAULT_UV_LAYER_BLEND_MODE,
   FACIAL_FEATURE_TYPES,
@@ -268,11 +272,22 @@ const sanitizeTextDecalStyle = (value: unknown): TextDecalStyle | null => {
     return null;
   }
 
+  const defaultStroke = getDefaultTextStrokeStyle();
+  const defaultShadow = getDefaultTextShadowStyle(value.fontSize);
   return {
     text: value.text,
     fontFamily: value.fontFamily,
     fontSize: value.fontSize,
     color: value.color,
+    strokeColor: typeof value.strokeColor === "string" ? value.strokeColor : defaultStroke.strokeColor,
+    strokeWidth: isFiniteNumber(value.strokeWidth) ? Math.max(0, Math.min(20, value.strokeWidth)) : defaultStroke.strokeWidth,
+    shadowColor: typeof value.shadowColor === "string" ? value.shadowColor : defaultShadow.shadowColor,
+    shadowOpacity: isFiniteNumber(value.shadowOpacity) ? Math.max(0, Math.min(1, value.shadowOpacity)) : defaultShadow.shadowOpacity,
+    shadowBlur: isFiniteNumber(value.shadowBlur) ? Math.max(0, Math.min(40, value.shadowBlur)) : defaultShadow.shadowBlur,
+    shadowOffsetX: isFiniteNumber(value.shadowOffsetX) ? Math.max(-40, Math.min(40, value.shadowOffsetX)) : defaultShadow.shadowOffsetX,
+    shadowOffsetY: isFiniteNumber(value.shadowOffsetY) ? Math.max(-40, Math.min(40, value.shadowOffsetY)) : defaultShadow.shadowOffsetY,
+    printTexture: sanitizePrintTextureStyle(value.printTexture),
+    printModeId: sanitizePrintModeId(value.printModeId),
   };
 };
 

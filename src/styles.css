@@ -1779,6 +1779,12 @@ body {
   border-radius: 10px;
 }
 
+.uv-editor__brush-color--compact {
+  width: 36px;
+  height: 30px;
+  border-radius: 9px;
+}
+
 .uv-editor__text-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 92px;
@@ -1999,16 +2005,36 @@ body {
   align-items: center;
 }
 
+.uv-editor__design-color-row--compact {
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px;
+}
+
 .uv-editor__design-color-chip {
   min-width: 88px;
   justify-content: center;
   text-transform: uppercase;
 }
 
+.uv-editor__design-color-chip--compact {
+  min-width: 0;
+  justify-content: flex-start;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .uv-editor__design-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+}
+
+.uv-editor__shadow-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  align-items: end;
 }
 
 .uv-editor__design-upload-row {
@@ -2036,6 +2062,16 @@ body {
 
 .uv-editor__design-grid--compact {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 420px) {
+  .uv-editor__shadow-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .uv-editor__design-grid--compact {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .uv-editor__design-card {
@@ -2096,6 +2132,7 @@ body {
   font-size: 11px;
   font-weight: 700;
   line-height: 1.2;
+  text-align: center;
 }
 
 .uv-editor__chip-row,

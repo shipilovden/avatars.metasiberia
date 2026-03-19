@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import {
+  createGeneratedDesignAsset,
+  DESIGN_STYLE_PRESETS,
   DEFAULT_DESIGN_PATTERN_CONTROLS,
   DEFAULT_DESIGN_TEXTURE_CONTENT_BOUNDS,
   DESIGN_GRADIENT_PRESETS,
   DESIGN_PATTERN_PRESETS,
   DESIGN_SHAPE_PRESETS,
+  applyDesignStylePreset,
+  getMatchingDesignStylePresetId,
   serializeDesignLayerStyle,
 } from "./design-presets";
 import type {
@@ -14,12 +18,38 @@ import type {
   DesignPatternControls,
   DesignPatternPreset,
   DesignShapePreset,
+  DesignStylePreset,
   DesignTextureContentBounds,
   DesignLayerStyle,
 } from "./design-presets";
+import { NumericSliderControl } from "./NumericSliderControl";
+import {
+  applyDesignPrintModePreset,
+  sanitizePrintModeId,
+} from "./print-mode-presets";
+import type { PrintModeId } from "./print-mode-presets";
+import {
+  DEFAULT_PRINT_TEXTURE_STYLE,
+  sanitizePrintTextureStyle,
+} from "./print-texture";
+import type { PrintTextureStyle } from "./print-texture";
 
 type DesignLayerPanelLocale = {
   designTitle: string;
+  designStylePresets: string;
+  designStyleSport: string;
+  designStyleCyber: string;
+  designStyleVintage: string;
+  designStyleGrunge: string;
+  designStyleLuxury: string;
+  designStyleCustom: string;
+  designPrintMode: string;
+  designPrintModeCustom: string;
+  designPrintModePatch: string;
+  designPrintModeVintage: string;
+  designPrintModeNeon: string;
+  designPrintModeSilkscreen: string;
+  designPrintModeEmbroidery: string;
   designFill: string;
   designSolid: string;
   designPattern: string;
@@ -30,6 +60,18 @@ type DesignLayerPanelLocale = {
   designStroke: string;
   designStrokeColor: string;
   designStrokeWidth: string;
+  designShadow: string;
+  designShadowColor: string;
+  designShadowOpacity: string;
+  designShadowBlur: string;
+  designShadowOffsetX: string;
+  designShadowOffsetY: string;
+  designPrintTexture: string;
+  designPrintTextureAmount: string;
+  designPrintTextureGrain: string;
+  designPrintTextureDistress: string;
+  designPrintTextureFade: string;
+  designPrintTextureFabric: string;
   designPatternPreset: string;
   designTextureUpload: string;
   designTextureReplace: string;
@@ -46,8 +88,21 @@ type DesignLayerPanelLocale = {
   designAddLayer: string;
   designFillHint: string;
   designColorHint: string;
+  designStyleHint: string;
+  designPrintModeHint: string;
   designStrokeColorHint: string;
   designStrokeWidthHint: string;
+  designShadowColorHint: string;
+  designShadowOpacityHint: string;
+  designShadowBlurHint: string;
+  designShadowOffsetXHint: string;
+  designShadowOffsetYHint: string;
+  designPrintTextureHint: string;
+  designPrintTextureAmountHint: string;
+  designPrintTextureGrainHint: string;
+  designPrintTextureDistressHint: string;
+  designPrintTextureFadeHint: string;
+  designPrintTextureFabricHint: string;
   designPatternHint: string;
   designTextureHint: string;
   designTextureUploadHint: string;
@@ -91,25 +146,6 @@ type CompactPresetPickerProps = {
   onClose: () => void;
   onSelect: (id: string) => void;
 };
-
-type PatternControlSliderProps = {
-  label: string;
-  tooltip: string;
-  sliderMin: number;
-  sliderMax: number;
-  sliderStep: number;
-  sliderValue: number;
-  inputMin: number;
-  inputMax: number;
-  inputStep: number;
-  inputValue: number;
-  inputSuffix?: string;
-  disabled?: boolean;
-  onSliderChange: (value: number) => void;
-  onInputChange: (value: number) => void;
-};
-
-const formatNumericInputValue = (value: number) => Number.parseFloat(value.toFixed(4)).toString();
 
 const hasDefaultTextureContentBounds = (value: DesignTextureContentBounds) =>
   Math.abs(value.left - DEFAULT_DESIGN_TEXTURE_CONTENT_BOUNDS.left) < 0.0001 &&
@@ -199,112 +235,6 @@ const readTextureFile = (file: File) =>
     };
     reader.readAsDataURL(file);
   });
-
-function PatternControlSlider({
-  label,
-  tooltip,
-  sliderMin,
-  sliderMax,
-  sliderStep,
-  sliderValue,
-  inputMin,
-  inputMax,
-  inputStep,
-  inputValue,
-  inputSuffix,
-  disabled,
-  onSliderChange,
-  onInputChange,
-}: PatternControlSliderProps) {
-  const [draftInputValue, setDraftInputValue] = useState(() => formatNumericInputValue(inputValue));
-  const [isInputFocused, setIsInputFocused] = useState(false);
-
-  useEffect(() => {
-    if (isInputFocused) {
-      return;
-    }
-    setDraftInputValue(formatNumericInputValue(inputValue));
-  }, [inputValue, isInputFocused]);
-
-  const applyDraftInputValue = (nextDraftValue: string) => {
-    setDraftInputValue(nextDraftValue);
-    const normalized = nextDraftValue.replace(",", ".").trim();
-    if (
-      normalized.length === 0 ||
-      normalized === "-" ||
-      normalized === "." ||
-      normalized === "-."
-    ) {
-      return;
-    }
-
-    const parsedValue = Number.parseFloat(normalized);
-    if (!Number.isFinite(parsedValue)) {
-      return;
-    }
-
-    const nextValue = Math.max(inputMin, Math.min(inputMax, parsedValue));
-    onInputChange(nextValue);
-  };
-
-  const commitDraftInputValue = () => {
-    const normalized = draftInputValue.replace(",", ".");
-    const parsedValue = Number.parseFloat(normalized);
-    if (!Number.isFinite(parsedValue)) {
-      setDraftInputValue(formatNumericInputValue(inputValue));
-      return;
-    }
-
-    const nextValue = Math.max(inputMin, Math.min(inputMax, parsedValue));
-    onInputChange(nextValue);
-    setDraftInputValue(formatNumericInputValue(nextValue));
-  };
-
-  return (
-    <div className="uv-editor__control-group">
-      <div className="uv-editor__control-label">{label}</div>
-      <div className="uv-editor__slider-row">
-        <input
-          className="uv-editor__slider"
-          type="range"
-          min={sliderMin}
-          max={sliderMax}
-          step={sliderStep}
-          value={sliderValue}
-          title={tooltip}
-          aria-label={tooltip}
-          disabled={disabled}
-          onChange={(event) => onSliderChange(Number(event.target.value))}
-        />
-        <label className="uv-editor__number-input">
-          <input
-            className="uv-editor__slider-number"
-            type="number"
-            min={inputMin}
-            max={inputMax}
-            step={inputStep}
-            value={draftInputValue}
-            title={tooltip}
-            aria-label={tooltip}
-            disabled={disabled}
-            onChange={(event) => applyDraftInputValue(event.target.value)}
-            onFocus={() => setIsInputFocused(true)}
-            onBlur={() => {
-              setIsInputFocused(false);
-              commitDraftInputValue();
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.currentTarget.blur();
-              }
-            }}
-          />
-          {inputSuffix ? <span className="uv-editor__number-suffix">{inputSuffix}</span> : null}
-        </label>
-      </div>
-    </div>
-  );
-}
 
 function DesignPresetInlineSwatch({ src }: { src: string }) {
   return (
@@ -421,6 +351,27 @@ function CompactPresetPicker({
   );
 }
 
+const getStylePresetLabel = (
+  locale: DesignLayerPanelLocale,
+  presetId: string,
+  fallbackName: string
+) => {
+  switch (presetId) {
+    case "sport":
+      return locale.designStyleSport;
+    case "cyber":
+      return locale.designStyleCyber;
+    case "vintage":
+      return locale.designStyleVintage;
+    case "grunge":
+      return locale.designStyleGrunge;
+    case "luxury":
+      return locale.designStyleLuxury;
+    default:
+      return fallbackName;
+  }
+};
+
 export function DesignLayerPanel({
   locale,
   brushColor,
@@ -438,6 +389,12 @@ export function DesignLayerPanel({
   const [solidColor, setSolidColor] = useState(brushColor);
   const [strokeColor, setStrokeColor] = useState("#ffffff");
   const [strokeWidth, setStrokeWidth] = useState(0);
+  const [printModeId, setPrintModeId] = useState<PrintModeId | null>(null);
+  const [shadowColor, setShadowColor] = useState("#0f1720");
+  const [shadowOpacity, setShadowOpacity] = useState(0.22);
+  const [shadowBlur, setShadowBlur] = useState(3.4);
+  const [shadowOffsetX, setShadowOffsetX] = useState(0);
+  const [shadowOffsetY, setShadowOffsetY] = useState(2.4);
   const [textureDataUrl, setTextureDataUrl] = useState("");
   const [textureFileName, setTextureFileName] = useState("");
   const [textureWidth, setTextureWidth] = useState(1024);
@@ -446,10 +403,13 @@ export function DesignLayerPanel({
   const [textureContentBounds, setTextureContentBounds] = useState<DesignTextureContentBounds>(
     () => ({ ...DEFAULT_DESIGN_TEXTURE_CONTENT_BOUNDS })
   );
+  const [printTexture, setPrintTexture] = useState<PrintTextureStyle>(() => ({
+    ...DEFAULT_PRINT_TEXTURE_STYLE,
+  }));
   const [shapePresetId, setShapePresetId] = useState(DESIGN_SHAPE_PRESETS[0]?.id || "badge");
   const [patternPresetId, setPatternPresetId] = useState(DESIGN_PATTERN_PRESETS[0]?.id || "checker");
   const [gradientPresetId, setGradientPresetId] = useState(DESIGN_GRADIENT_PRESETS[0]?.id || "sunset");
-  const [openPicker, setOpenPicker] = useState<"shape" | "pattern" | "gradient" | null>(null);
+  const [openPicker, setOpenPicker] = useState<"style" | "shape" | "pattern" | "gradient" | null>(null);
   const [patternControls, setPatternControls] = useState<DesignPatternControls>(() => ({
     ...DEFAULT_DESIGN_PATTERN_CONTROLS,
   }));
@@ -466,18 +426,40 @@ export function DesignLayerPanel({
     () => DESIGN_GRADIENT_PRESETS.find((preset) => preset.id === gradientPresetId) || DESIGN_GRADIENT_PRESETS[0]!,
     [gradientPresetId]
   );
+  const localizedStylePresets = useMemo<DesignPreviewPreset[]>(
+    () =>
+      DESIGN_STYLE_PRESETS.map((preset) => ({
+        id: preset.id,
+        name: getStylePresetLabel(locale, preset.id, preset.name),
+        previewSrc: preset.previewSrc,
+      })),
+    [
+      locale.designStyleCyber,
+      locale.designStyleGrunge,
+      locale.designStyleLuxury,
+      locale.designStyleSport,
+      locale.designStyleVintage,
+    ]
+  );
   const currentStyle = useMemo<DesignLayerStyle>(
     () => ({
       fillMode,
       solidColor,
       strokeColor,
       strokeWidth,
+      printModeId,
+      shadowColor,
+      shadowOpacity,
+      shadowBlur,
+      shadowOffsetX,
+      shadowOffsetY,
       textureDataUrl,
       textureFileName,
       textureWidth,
       textureHeight,
       textureAutoCenter,
       textureContentBounds,
+      printTexture,
       shapePresetId,
       patternPresetId,
       gradientPresetId,
@@ -485,6 +467,7 @@ export function DesignLayerPanel({
     }),
     [
       fillMode,
+      printModeId,
       gradientPresetId,
       patternControls,
       patternPresetId,
@@ -492,12 +475,18 @@ export function DesignLayerPanel({
       solidColor,
       strokeColor,
       strokeWidth,
+      shadowColor,
+      shadowOpacity,
+      shadowBlur,
+      shadowOffsetX,
+      shadowOffsetY,
       textureDataUrl,
       textureFileName,
       textureHeight,
       textureAutoCenter,
       textureContentBounds,
       textureWidth,
+      printTexture,
     ]
   );
   const selectedStyleSignature = useMemo(
@@ -508,11 +497,42 @@ export function DesignLayerPanel({
     () => serializeDesignLayerStyle(currentStyle),
     [currentStyle]
   );
+  const activeStylePresetId = useMemo(() => getMatchingDesignStylePresetId(currentStyle), [currentStyle]);
+  const activeStylePreset = useMemo<DesignPreviewPreset>(() => {
+    const matchedPreset = localizedStylePresets.find((preset) => preset.id === activeStylePresetId);
+    if (matchedPreset) {
+      return matchedPreset;
+    }
+
+    const generated = createGeneratedDesignAsset({
+      style: currentStyle,
+      isRussian: false,
+    });
+
+    return {
+      id: "custom-style",
+      name: locale.designStyleCustom,
+      previewSrc: generated.textureUrl,
+    };
+  }, [activeStylePresetId, currentStyle, locale.designStyleCustom, localizedStylePresets]);
   const updatePatternControls = (patch: Partial<DesignPatternControls>) =>
     setPatternControls((current) => ({
       ...current,
       ...patch,
     }));
+  const markPrintModeCustom = () => setPrintModeId(null);
+  const updatePrintTexture = (patch: Partial<PrintTextureStyle>) => {
+    markPrintModeCustom();
+    setPrintTexture((current) => sanitizePrintTextureStyle({ ...current, ...patch }));
+  };
+  const designPrintModeOptions = [
+    { value: "custom", label: locale.designPrintModeCustom },
+    { value: "patch", label: locale.designPrintModePatch },
+    { value: "vintage", label: locale.designPrintModeVintage },
+    { value: "neon", label: locale.designPrintModeNeon },
+    { value: "silkscreen", label: locale.designPrintModeSilkscreen },
+    { value: "embroidery", label: locale.designPrintModeEmbroidery },
+  ] as const;
   const hasTextureSource = Boolean(textureDataUrl);
   const usesTiledFillControls = fillMode === "pattern" || fillMode === "texture";
   const isTextureAutoCenterLocked = fillMode === "texture" && textureAutoCenter;
@@ -527,6 +547,42 @@ export function DesignLayerPanel({
         (selectedStyle.textureWidth || 1024) !== textureWidth ||
         (selectedStyle.textureHeight || 1024) !== textureHeight)
   );
+
+  const applyStylePresetToPanel = (preset: DesignStylePreset) => {
+    const nextStyle = applyDesignStylePreset(currentStyle, preset);
+    setFillMode(nextStyle.fillMode);
+    setSolidColor(nextStyle.solidColor);
+    setStrokeColor(nextStyle.strokeColor);
+    setStrokeWidth(nextStyle.strokeWidth);
+    setPrintModeId(null);
+    setShadowColor(nextStyle.shadowColor);
+    setShadowOpacity(nextStyle.shadowOpacity);
+    setShadowBlur(nextStyle.shadowBlur);
+    setShadowOffsetX(nextStyle.shadowOffsetX);
+    setShadowOffsetY(nextStyle.shadowOffsetY);
+    setPrintTexture(sanitizePrintTextureStyle(nextStyle.printTexture));
+    setPatternPresetId(nextStyle.patternPresetId);
+    setGradientPresetId(nextStyle.gradientPresetId);
+    setPatternControls({
+      ...DEFAULT_DESIGN_PATTERN_CONTROLS,
+      ...nextStyle.patternControls,
+    });
+    setOpenPicker(null);
+    onBrushColorChange(nextStyle.solidColor);
+  };
+
+  const applyPrintModePresetToPanel = (nextPrintModeId: PrintModeId) => {
+    const nextStyle = applyDesignPrintModePreset(currentStyle, nextPrintModeId);
+    setStrokeColor(nextStyle.strokeColor);
+    setStrokeWidth(nextStyle.strokeWidth);
+    setShadowColor(nextStyle.shadowColor);
+    setShadowOpacity(nextStyle.shadowOpacity);
+    setShadowBlur(nextStyle.shadowBlur);
+    setShadowOffsetX(nextStyle.shadowOffsetX);
+    setShadowOffsetY(nextStyle.shadowOffsetY);
+    setPrintTexture(sanitizePrintTextureStyle(nextStyle.printTexture));
+    setPrintModeId(nextPrintModeId);
+  };
 
   const handleTextureFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0] || null;
@@ -564,12 +620,19 @@ export function DesignLayerPanel({
     setSolidColor(selectedStyle.solidColor);
     setStrokeColor(selectedStyle.strokeColor || "#ffffff");
     setStrokeWidth(typeof selectedStyle.strokeWidth === "number" ? selectedStyle.strokeWidth : 0);
+    setPrintModeId(sanitizePrintModeId(selectedStyle.printModeId));
+    setShadowColor(selectedStyle.shadowColor || "#0f1720");
+    setShadowOpacity(typeof selectedStyle.shadowOpacity === "number" ? selectedStyle.shadowOpacity : 0.22);
+    setShadowBlur(typeof selectedStyle.shadowBlur === "number" ? selectedStyle.shadowBlur : 3.4);
+    setShadowOffsetX(typeof selectedStyle.shadowOffsetX === "number" ? selectedStyle.shadowOffsetX : 0);
+    setShadowOffsetY(typeof selectedStyle.shadowOffsetY === "number" ? selectedStyle.shadowOffsetY : 2.4);
     setTextureDataUrl(selectedStyle.textureDataUrl || "");
     setTextureFileName(selectedStyle.textureFileName || "");
     setTextureWidth(typeof selectedStyle.textureWidth === "number" ? selectedStyle.textureWidth : 1024);
     setTextureHeight(typeof selectedStyle.textureHeight === "number" ? selectedStyle.textureHeight : 1024);
     setTextureAutoCenter(Boolean(selectedStyle.textureAutoCenter));
     setTextureContentBounds(selectedStyle.textureContentBounds || { ...DEFAULT_DESIGN_TEXTURE_CONTENT_BOUNDS });
+    setPrintTexture(sanitizePrintTextureStyle(selectedStyle.printTexture));
     setShapePresetId(selectedStyle.shapePresetId);
     setPatternPresetId(selectedStyle.patternPresetId);
     setGradientPresetId(selectedStyle.gradientPresetId);
@@ -685,6 +748,46 @@ export function DesignLayerPanel({
       </div>
 
       <CompactPresetPicker
+        label={locale.designStylePresets}
+        tooltip={locale.designStyleHint}
+        presets={localizedStylePresets}
+        activePreset={activeStylePreset}
+        isOpen={openPicker === "style"}
+        onToggle={() => setOpenPicker((current) => (current === "style" ? null : "style"))}
+        onClose={() => setOpenPicker((current) => (current === "style" ? null : current))}
+        onSelect={(id) => {
+          const preset = DESIGN_STYLE_PRESETS.find((entry) => entry.id === id);
+          if (preset) {
+            applyStylePresetToPanel(preset);
+          }
+        }}
+      />
+
+      <div className="uv-editor__control-group">
+        <div className="uv-editor__control-label">{locale.designPrintMode}</div>
+        <select
+          className="uv-editor__text-select"
+          value={printModeId || "custom"}
+          title={locale.designPrintModeHint}
+          aria-label={locale.designPrintModeHint}
+          onChange={(event) => {
+            const nextValue = sanitizePrintModeId(event.target.value);
+            if (!nextValue) {
+              setPrintModeId(null);
+              return;
+            }
+            applyPrintModePresetToPanel(nextValue);
+          }}
+        >
+          {designPrintModeOptions.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <CompactPresetPicker
         label={locale.designShape}
         tooltip={locale.designShapeHint}
         presets={DESIGN_SHAPE_PRESETS}
@@ -787,7 +890,7 @@ export function DesignLayerPanel({
       {usesTiledFillControls ? (
         <>
           <div className="uv-editor__design-grid">
-            <PatternControlSlider
+            <NumericSliderControl
               label={locale.designPatternScale}
               tooltip={locale.designPatternScaleHint}
               sliderMin={25}
@@ -802,7 +905,7 @@ export function DesignLayerPanel({
               onSliderChange={(value) => updatePatternControls({ scale: value / 100 })}
               onInputChange={(value) => updatePatternControls({ scale: value / 100 })}
             />
-            <PatternControlSlider
+            <NumericSliderControl
               label={locale.designPatternRotation}
               tooltip={locale.designPatternRotationHint}
               sliderMin={-180}
@@ -821,7 +924,7 @@ export function DesignLayerPanel({
           </div>
 
           <div className="uv-editor__design-grid">
-            <PatternControlSlider
+            <NumericSliderControl
               label={locale.designPatternOffsetX}
               tooltip={locale.designPatternOffsetXHint}
               sliderMin={-200}
@@ -837,7 +940,7 @@ export function DesignLayerPanel({
               onSliderChange={(value) => updatePatternControls({ offsetX: value })}
               onInputChange={(value) => updatePatternControls({ offsetX: value })}
             />
-            <PatternControlSlider
+            <NumericSliderControl
               label={locale.designPatternOffsetY}
               tooltip={locale.designPatternOffsetYHint}
               sliderMin={-200}
@@ -856,7 +959,7 @@ export function DesignLayerPanel({
           </div>
 
           <div className="uv-editor__design-grid">
-            <PatternControlSlider
+            <NumericSliderControl
               label={locale.designPatternRepeatX}
               tooltip={locale.designPatternRepeatXHint}
               sliderMin={25}
@@ -872,7 +975,7 @@ export function DesignLayerPanel({
               onSliderChange={(value) => updatePatternControls({ repeatX: value / 100 })}
               onInputChange={(value) => updatePatternControls({ repeatX: value })}
             />
-            <PatternControlSlider
+            <NumericSliderControl
               label={locale.designPatternRepeatY}
               tooltip={locale.designPatternRepeatYHint}
               sliderMin={25}
@@ -926,13 +1029,16 @@ export function DesignLayerPanel({
                 value={strokeColor}
                 title={locale.designStrokeColorHint}
                 aria-label={locale.designStrokeColorHint}
-                onChange={(event) => setStrokeColor(event.target.value)}
+                onChange={(event) => {
+                  markPrintModeCustom();
+                  setStrokeColor(event.target.value);
+                }}
               />
               <span className="uv-editor__value-chip uv-editor__design-color-chip">{strokeColor.toUpperCase()}</span>
             </div>
           </div>
 
-          <PatternControlSlider
+          <NumericSliderControl
             label={locale.designStrokeWidth}
             tooltip={locale.designStrokeWidthHint}
             sliderMin={0}
@@ -943,8 +1049,210 @@ export function DesignLayerPanel({
             inputMax={6}
             inputStep={0.1}
             inputValue={strokeWidth}
-            onSliderChange={setStrokeWidth}
-            onInputChange={setStrokeWidth}
+            onSliderChange={(value) => {
+              markPrintModeCustom();
+              setStrokeWidth(value);
+            }}
+            onInputChange={(value) => {
+              markPrintModeCustom();
+              setStrokeWidth(value);
+            }}
+          />
+        </div>
+      </div>
+
+      <div className="uv-editor__control-group">
+        <div className="uv-editor__control-label">{locale.designShadow}</div>
+        <div className="uv-editor__shadow-grid">
+          <div className="uv-editor__control-group">
+            <div className="uv-editor__control-label">{locale.designShadowColor}</div>
+            <div className="uv-editor__design-color-row uv-editor__design-color-row--compact">
+              <input
+                className="uv-editor__brush-color uv-editor__brush-color--compact"
+                type="color"
+                value={shadowColor}
+                title={locale.designShadowColorHint}
+                aria-label={locale.designShadowColorHint}
+                onChange={(event) => {
+                  markPrintModeCustom();
+                  setShadowColor(event.target.value);
+                }}
+              />
+              <span className="uv-editor__value-chip uv-editor__design-color-chip uv-editor__design-color-chip--compact">
+                {shadowColor.toUpperCase()}
+              </span>
+            </div>
+          </div>
+
+          <NumericSliderControl
+            label={locale.designShadowOpacity}
+            tooltip={locale.designShadowOpacityHint}
+            sliderMin={0}
+            sliderMax={100}
+            sliderStep={1}
+            sliderValue={Math.round(shadowOpacity * 100)}
+            inputMin={0}
+            inputMax={100}
+            inputStep={1}
+            inputValue={shadowOpacity * 100}
+            inputSuffix="%"
+            onSliderChange={(value) => {
+              markPrintModeCustom();
+              setShadowOpacity(value / 100);
+            }}
+            onInputChange={(value) => {
+              markPrintModeCustom();
+              setShadowOpacity(value / 100);
+            }}
+          />
+        </div>
+
+        <NumericSliderControl
+          label={locale.designShadowBlur}
+          tooltip={locale.designShadowBlurHint}
+          sliderMin={0}
+          sliderMax={20}
+          sliderStep={0.1}
+          sliderValue={shadowBlur}
+          inputMin={0}
+          inputMax={20}
+          inputStep={0.1}
+          inputValue={shadowBlur}
+          onSliderChange={(value) => {
+            markPrintModeCustom();
+            setShadowBlur(value);
+          }}
+          onInputChange={(value) => {
+            markPrintModeCustom();
+            setShadowBlur(value);
+          }}
+        />
+
+        <div className="uv-editor__shadow-grid">
+          <NumericSliderControl
+            label={locale.designShadowOffsetX}
+            tooltip={locale.designShadowOffsetXHint}
+            sliderMin={-20}
+            sliderMax={20}
+            sliderStep={0.1}
+            sliderValue={shadowOffsetX}
+            inputMin={-20}
+            inputMax={20}
+            inputStep={0.1}
+            inputValue={shadowOffsetX}
+            onSliderChange={(value) => {
+              markPrintModeCustom();
+              setShadowOffsetX(value);
+            }}
+            onInputChange={(value) => {
+              markPrintModeCustom();
+              setShadowOffsetX(value);
+            }}
+          />
+          <NumericSliderControl
+            label={locale.designShadowOffsetY}
+            tooltip={locale.designShadowOffsetYHint}
+            sliderMin={-20}
+            sliderMax={20}
+            sliderStep={0.1}
+            sliderValue={shadowOffsetY}
+            inputMin={-20}
+            inputMax={20}
+            inputStep={0.1}
+            inputValue={shadowOffsetY}
+            onSliderChange={(value) => {
+              markPrintModeCustom();
+              setShadowOffsetY(value);
+            }}
+            onInputChange={(value) => {
+              markPrintModeCustom();
+              setShadowOffsetY(value);
+            }}
+          />
+        </div>
+      </div>
+
+      <div className="uv-editor__control-group">
+        <div className="uv-editor__control-label">{locale.designPrintTexture}</div>
+        <NumericSliderControl
+          label={locale.designPrintTextureAmount}
+          tooltip={locale.designPrintTextureAmountHint}
+          sliderMin={0}
+          sliderMax={100}
+          sliderStep={1}
+          sliderValue={Math.round(printTexture.amount * 100)}
+          inputMin={0}
+          inputMax={100}
+          inputStep={1}
+          inputValue={printTexture.amount * 100}
+          inputSuffix="%"
+          onSliderChange={(value) => updatePrintTexture({ amount: value / 100 })}
+          onInputChange={(value) => updatePrintTexture({ amount: value / 100 })}
+        />
+
+        <div className="uv-editor__shadow-grid">
+          <NumericSliderControl
+            label={locale.designPrintTextureGrain}
+            tooltip={locale.designPrintTextureGrainHint}
+            sliderMin={0}
+            sliderMax={100}
+            sliderStep={1}
+            sliderValue={Math.round(printTexture.grain * 100)}
+            inputMin={0}
+            inputMax={100}
+            inputStep={1}
+            inputValue={printTexture.grain * 100}
+            inputSuffix="%"
+            onSliderChange={(value) => updatePrintTexture({ grain: value / 100 })}
+            onInputChange={(value) => updatePrintTexture({ grain: value / 100 })}
+          />
+          <NumericSliderControl
+            label={locale.designPrintTextureDistress}
+            tooltip={locale.designPrintTextureDistressHint}
+            sliderMin={0}
+            sliderMax={100}
+            sliderStep={1}
+            sliderValue={Math.round(printTexture.distress * 100)}
+            inputMin={0}
+            inputMax={100}
+            inputStep={1}
+            inputValue={printTexture.distress * 100}
+            inputSuffix="%"
+            onSliderChange={(value) => updatePrintTexture({ distress: value / 100 })}
+            onInputChange={(value) => updatePrintTexture({ distress: value / 100 })}
+          />
+        </div>
+
+        <div className="uv-editor__shadow-grid">
+          <NumericSliderControl
+            label={locale.designPrintTextureFade}
+            tooltip={locale.designPrintTextureFadeHint}
+            sliderMin={0}
+            sliderMax={100}
+            sliderStep={1}
+            sliderValue={Math.round(printTexture.fade * 100)}
+            inputMin={0}
+            inputMax={100}
+            inputStep={1}
+            inputValue={printTexture.fade * 100}
+            inputSuffix="%"
+            onSliderChange={(value) => updatePrintTexture({ fade: value / 100 })}
+            onInputChange={(value) => updatePrintTexture({ fade: value / 100 })}
+          />
+          <NumericSliderControl
+            label={locale.designPrintTextureFabric}
+            tooltip={locale.designPrintTextureFabricHint}
+            sliderMin={0}
+            sliderMax={100}
+            sliderStep={1}
+            sliderValue={Math.round(printTexture.fabricNoise * 100)}
+            inputMin={0}
+            inputMax={100}
+            inputStep={1}
+            inputValue={printTexture.fabricNoise * 100}
+            inputSuffix="%"
+            onSliderChange={(value) => updatePrintTexture({ fabricNoise: value / 100 })}
+            onInputChange={(value) => updatePrintTexture({ fabricNoise: value / 100 })}
           />
         </div>
       </div>

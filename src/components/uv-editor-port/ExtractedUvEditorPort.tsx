@@ -6,6 +6,8 @@ import {
   DEFAULT_UV_LAYER_BLEND_MODE,
   getCanonicalMeshSlot,
   getCanvasCompositeOperationForUvBlendMode,
+  getDefaultTextShadowStyle,
+  getDefaultTextStrokeStyle,
   UV_LAYER_BLEND_MODES,
 } from "../avatar/shared";
 import type {
@@ -19,11 +21,23 @@ import {
 } from "./brush-presets";
 import type { BrushPreset, BrushPresetKind } from "./brush-presets";
 import { DesignLayerPanel } from "./DesignLayerPanel";
+import { NumericSliderControl } from "./NumericSliderControl";
 import {
   createGeneratedDesignAsset,
   sanitizeDesignLayerStyle,
 } from "./design-presets";
 import type { DesignLayerStyle } from "./design-presets";
+import {
+  applyTextPrintModePreset,
+  sanitizePrintModeId,
+} from "./print-mode-presets";
+import type { PrintModeId } from "./print-mode-presets";
+import {
+  DEFAULT_PRINT_TEXTURE_STYLE,
+  sanitizePrintTextureStyle,
+  serializePrintTextureStyle,
+} from "./print-texture";
+import type { PrintTextureStyle } from "./print-texture";
 import { createUvPortDocumentFromLegacyProps } from "./legacy-adapter";
 import { GFTO_TEXT_FONT_OPTIONS } from "./gfto-font-options";
 import type {
@@ -464,17 +478,124 @@ const trimCanvasTransparentBounds = (canvas: HTMLCanvasElement, paddingPx: numbe
   return trimmedCanvas;
 };
 
+const fract = (value: number) => value - Math.floor(value);
+
+const hashNoise2D = (x: number, y: number, seed: number) =>
+  fract(Math.sin(x * 127.1 + y * 311.7 + seed * 74.7) * 43758.5453123);
+
+const smoothNoise2D = (x: number, y: number, seed: number) => {
+  const x0 = Math.floor(x);
+  const y0 = Math.floor(y);
+  const tx = x - x0;
+  const ty = y - y0;
+  const sx = tx * tx * (3 - 2 * tx);
+  const sy = ty * ty * (3 - 2 * ty);
+  const n00 = hashNoise2D(x0, y0, seed);
+  const n10 = hashNoise2D(x0 + 1, y0, seed);
+  const n01 = hashNoise2D(x0, y0 + 1, seed);
+  const n11 = hashNoise2D(x0 + 1, y0 + 1, seed);
+  const nx0 = n00 + (n10 - n00) * sx;
+  const nx1 = n01 + (n11 - n01) * sx;
+  return nx0 + (nx1 - nx0) * sy;
+};
+
+const mixColorChannel = (from: number, to: number, amount: number) => from + (to - from) * amount;
+
+const applyPrintTextureToCanvas = (canvas: HTMLCanvasElement, printTexture: PrintTextureStyle) => {
+  const normalizedPrintTexture = sanitizePrintTextureStyle(printTexture);
+  if (normalizedPrintTexture.amount <= 0.001) {
+    return canvas;
+  }
+
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) {
+    return canvas;
+  }
+
+  const { width, height } = canvas;
+  const imageData = context.getImageData(0, 0, width, height);
+  const pixels = imageData.data;
+  const amount = normalizedPrintTexture.amount;
+  const grain = normalizedPrintTexture.grain * amount;
+  const distress = normalizedPrintTexture.distress * amount;
+  const fade = normalizedPrintTexture.fade * amount;
+  const fabricNoise = normalizedPrintTexture.fabricNoise * amount;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = (y * width + x) * 4;
+      const alpha = pixels[index + 3];
+      if (alpha === 0) {
+        continue;
+      }
+
+      const alphaFactor = alpha / 255;
+      const fineNoise = hashNoise2D(x * 1.7, y * 1.7, 11) - 0.5;
+      const fabricBase =
+        (smoothNoise2D(x / 7.5, y / 7.5, 29) - 0.5) * 0.65 +
+        (smoothNoise2D(x / 17, y / 17, 41) - 0.5) * 0.35;
+      const distressNoise = smoothNoise2D(x / 10.5, y / 10.5, 53);
+      const edgeBoost = alphaFactor < 0.96 ? 1.28 : 1;
+      const toneShift = fineNoise * grain * 34 + fabricBase * fabricNoise * 28;
+      const lightenAmount = Math.max(0, fade * 0.2 + Math.max(0, fabricBase) * fabricNoise * 0.08);
+
+      pixels[index] = clamp(Math.round(mixColorChannel(pixels[index] + toneShift, 255, lightenAmount)), 0, 255);
+      pixels[index + 1] = clamp(
+        Math.round(mixColorChannel(pixels[index + 1] + toneShift, 255, lightenAmount)),
+        0,
+        255
+      );
+      pixels[index + 2] = clamp(
+        Math.round(mixColorChannel(pixels[index + 2] + toneShift, 255, lightenAmount)),
+        0,
+        255
+      );
+
+      const fadeAlpha = 1 - fade * 0.42;
+      const distressCut = Math.max(0, distressNoise - (0.82 - distress * 0.24));
+      const distressedAlpha =
+        alpha *
+        fadeAlpha *
+        Math.max(0, 1 - distressCut * distress * edgeBoost * 2.1) *
+        Math.max(0.18, 1 + fabricBase * fabricNoise * 0.16);
+
+      pixels[index + 3] = clamp(Math.round(distressedAlpha), 0, 255);
+    }
+  }
+
+  context.putImageData(imageData, 0, 0);
+  return canvas;
+};
+
 const createTextDecalTexture = ({
   text,
   fontFamily,
   fontSize,
   color,
+  strokeColor,
+  strokeWidth,
+  shadowColor,
+  shadowOpacity,
+  shadowBlur,
+  shadowOffsetX,
+  shadowOffsetY,
+  printTexture,
+  printModeId,
   isRussian,
 }: {
   text: string;
   fontFamily: string;
   fontSize: number;
   color: string;
+  strokeColor: string;
+  strokeWidth: number;
+  shadowColor: string;
+  shadowOpacity: number;
+  shadowBlur: number;
+  shadowOffsetX: number;
+  shadowOffsetY: number;
+  printTexture: PrintTextureStyle;
+  printModeId: PrintModeId | null;
   isRussian: boolean;
 }) => {
   if (typeof document === "undefined") {
@@ -494,16 +615,20 @@ const createTextDecalTexture = ({
   }
 
   const safeFontSize = clamp(Math.round(fontSize), 18, 220);
+  const defaultStroke = getDefaultTextStrokeStyle();
+  const defaultShadow = getDefaultTextShadowStyle(safeFontSize);
+  const normalizedPrintTexture = sanitizePrintTextureStyle(printTexture);
   const fontDeclaration = `700 ${safeFontSize}px ${fontFamily}`;
   probeContext.font = fontDeclaration;
+  const safeStrokeWidth = clamp(strokeWidth, 0, 20);
 
   const measuredWidth = lines.reduce(
     (maxWidth, line) => Math.max(maxWidth, probeContext.measureText(line || " ").width),
     safeFontSize
   );
   const lineHeight = Math.max(24, Math.round(safeFontSize * 1.18));
-  const logicalWidth = Math.ceil(measuredWidth + safeFontSize * 1.5);
-  const logicalHeight = Math.ceil(lines.length * lineHeight + safeFontSize);
+  const logicalWidth = Math.ceil(measuredWidth + safeFontSize * 1.5 + safeStrokeWidth * 6);
+  const logicalHeight = Math.ceil(lines.length * lineHeight + safeFontSize + safeStrokeWidth * 6);
   const scaleFactor = 2;
 
   const canvas = document.createElement("canvas");
@@ -518,6 +643,18 @@ const createTextDecalTexture = ({
   const width = canvas.width / scaleFactor;
   const height = canvas.height / scaleFactor;
   const startY = (height - lines.length * lineHeight) * 0.5 + lineHeight * 0.5;
+  const normalizedShadowHex = (shadowColor || defaultShadow.shadowColor).replace("#", "").trim();
+  const shadowHex =
+    normalizedShadowHex.length === 3
+      ? normalizedShadowHex
+          .split("")
+          .map((entry) => `${entry}${entry}`)
+          .join("")
+      : normalizedShadowHex.padEnd(6, "0").slice(0, 6);
+  const shadowRed = Number.parseInt(shadowHex.slice(0, 2), 16);
+  const shadowGreen = Number.parseInt(shadowHex.slice(2, 4), 16);
+  const shadowBlue = Number.parseInt(shadowHex.slice(4, 6), 16);
+  const safeShadowOpacity = Math.max(0, Math.min(1, shadowOpacity));
 
   context.clearRect(0, 0, canvas.width, canvas.height);
   context.scale(scaleFactor, scaleFactor);
@@ -525,16 +662,35 @@ const createTextDecalTexture = ({
   context.textAlign = "center";
   context.textBaseline = "middle";
   context.fillStyle = color;
-  context.shadowColor = "rgba(0, 0, 0, 0.18)";
-  context.shadowBlur = Math.max(2, safeFontSize * 0.08);
-  context.shadowOffsetY = Math.max(1, safeFontSize * 0.03);
+  context.strokeStyle = strokeColor || defaultStroke.strokeColor;
+  context.lineWidth = safeStrokeWidth * 2;
+  context.lineJoin = "round";
+  context.miterLimit = 2;
+  context.shadowColor = `rgba(${shadowRed}, ${shadowGreen}, ${shadowBlue}, ${safeShadowOpacity})`;
+  context.shadowBlur = Math.max(0, shadowBlur);
+  context.shadowOffsetX = shadowOffsetX;
+  context.shadowOffsetY = shadowOffsetY;
 
   lines.forEach((line, index) => {
     context.fillText(line || " ", width * 0.5, startY + index * lineHeight);
   });
 
+  context.shadowColor = "rgba(0, 0, 0, 0)";
+  context.shadowBlur = 0;
+  context.shadowOffsetX = 0;
+  context.shadowOffsetY = 0;
+
+  lines.forEach((line, index) => {
+    const baselineY = startY + index * lineHeight;
+    if (safeStrokeWidth > 0.001) {
+      context.strokeText(line || " ", width * 0.5, baselineY);
+    }
+    context.fillText(line || " ", width * 0.5, baselineY);
+  });
+
   const fileStem = sanitizeGeneratedTextFileName(normalizedText, isRussian);
-  const trimmedCanvas = trimCanvasTransparentBounds(canvas, safeFontSize * 0.12 * scaleFactor);
+  const texturedCanvas = applyPrintTextureToCanvas(canvas, normalizedPrintTexture);
+  const trimmedCanvas = trimCanvasTransparentBounds(texturedCanvas, safeFontSize * 0.12 * scaleFactor);
   return {
     fileName: `${fileStem}.png`,
     textureUrl: trimmedCanvas.toDataURL("image/png"),
@@ -543,6 +699,15 @@ const createTextDecalTexture = ({
       fontFamily,
       fontSize: safeFontSize,
       color,
+      strokeColor: strokeColor || defaultStroke.strokeColor,
+      strokeWidth: safeStrokeWidth,
+      shadowColor: `#${shadowHex.toLowerCase()}`,
+      shadowOpacity: safeShadowOpacity,
+      shadowBlur: Math.max(0, shadowBlur),
+      shadowOffsetX,
+      shadowOffsetY,
+      printTexture: normalizedPrintTexture,
+      printModeId: sanitizePrintModeId(printModeId),
     },
   };
 };
@@ -1648,6 +1813,28 @@ const getLocaleStrings = (copy: UvDecalEditorProps["copy"]) => {
     textFont: isRussian ? "Шрифт" : "Font",
     textSize: isRussian ? "Размер" : "Size",
     textColor: isRussian ? "Цвет текста" : "Text color",
+    textStroke: isRussian ? "Обводка" : "Stroke",
+    textStrokeColor: isRussian ? "Цвет обводки" : "Stroke color",
+    textStrokeWidth: isRussian ? "Толщина" : "Thickness",
+    textShadow: isRussian ? "Тень" : "Shadow",
+    textShadowColor: isRussian ? "Цвет тени" : "Shadow color",
+    textShadowOpacity: isRussian ? "Прозрачность" : "Opacity",
+    textShadowBlur: isRussian ? "Размытие" : "Blur",
+    textShadowOffsetX: isRussian ? "Сдвиг X" : "Offset X",
+    textShadowOffsetY: isRussian ? "Сдвиг Y" : "Offset Y",
+    textPrintMode: isRussian ? "Режим принта" : "Print mode",
+    textPrintModeCustom: isRussian ? "Свой режим" : "Custom mode",
+    textPrintModePatch: isRussian ? "Нашивка" : "Patch",
+    textPrintModeVintage: isRussian ? "Винтаж" : "Vintage",
+    textPrintModeNeon: isRussian ? "Неон" : "Neon",
+    textPrintModeSilkscreen: isRussian ? "Шелкография" : "Silkscreen",
+    textPrintModeEmbroidery: isRussian ? "Вышивка" : "Embroidery",
+    textPrintTexture: isRussian ? "Фактура печати" : "Print texture",
+    textPrintTextureAmount: isRussian ? "Сила" : "Amount",
+    textPrintTextureGrain: isRussian ? "Зерно" : "Grain",
+    textPrintTextureDistress: isRussian ? "Потертость" : "Distress",
+    textPrintTextureFade: isRussian ? "Выцветание" : "Fade",
+    textPrintTextureFabric: isRussian ? "Тканевый шум" : "Fabric noise",
     addText: isRussian ? "Добавить текст" : "Add text",
     toolbarUndo: isRussian ? "Назад" : "Back",
     toolbarRedo: isRussian ? "Вперёд" : "Forward",
@@ -1701,6 +1888,20 @@ const getLocaleStrings = (copy: UvDecalEditorProps["copy"]) => {
     brushPresets: isRussian ? "\u041a\u0438\u0441\u0442\u0438" : "Brushes",
     stampPresets: isRussian ? "\u0428\u0442\u0430\u043c\u043f\u044b" : "Stamps",
     designTitle: isRussian ? "\u0414\u0438\u0437\u0430\u0439\u043d" : "Design",
+    designStylePresets: isRussian ? "\u0421\u0442\u0438\u043b\u0438" : "Styles",
+    designStyleSport: isRussian ? "\u0421\u043f\u043e\u0440\u0442" : "Sport",
+    designStyleCyber: isRussian ? "\u041a\u0438\u0431\u0435\u0440" : "Cyber",
+    designStyleVintage: isRussian ? "\u0412\u0438\u043d\u0442\u0430\u0436" : "Vintage",
+    designStyleGrunge: isRussian ? "\u0413\u0440\u0430\u043d\u0436" : "Grunge",
+    designStyleLuxury: isRussian ? "\u041b\u044e\u043a\u0441" : "Luxury",
+    designStyleCustom: isRussian ? "\u0421\u0432\u043e\u0439 \u0441\u0442\u0438\u043b\u044c" : "Custom style",
+    designPrintMode: isRussian ? "\u0420\u0435\u0436\u0438\u043c \u043f\u0440\u0438\u043d\u0442\u0430" : "Print mode",
+    designPrintModeCustom: isRussian ? "\u0421\u0432\u043e\u0439 \u0440\u0435\u0436\u0438\u043c" : "Custom mode",
+    designPrintModePatch: isRussian ? "\u041d\u0430\u0448\u0438\u0432\u043a\u0430" : "Patch",
+    designPrintModeVintage: isRussian ? "\u0412\u0438\u043d\u0442\u0430\u0436" : "Vintage",
+    designPrintModeNeon: isRussian ? "\u041d\u0435\u043e\u043d" : "Neon",
+    designPrintModeSilkscreen: isRussian ? "\u0428\u0435\u043b\u043a\u043e\u0433\u0440\u0430\u0444\u0438\u044f" : "Silkscreen",
+    designPrintModeEmbroidery: isRussian ? "\u0412\u044b\u0448\u0438\u0432\u043a\u0430" : "Embroidery",
     designFill: "\u0417\u0430\u043b\u0438\u0432\u043a\u0430",
     designSolid: isRussian ? "\u0426\u0432\u0435\u0442" : "Solid",
     designPattern: isRussian ? "\u041f\u0430\u0442\u0442\u0435\u0440\u043d" : "Pattern",
@@ -1711,6 +1912,18 @@ const getLocaleStrings = (copy: UvDecalEditorProps["copy"]) => {
     designStroke: isRussian ? "\u041e\u0431\u0432\u043e\u0434\u043a\u0430" : "Stroke",
     designStrokeColor: isRussian ? "\u0426\u0432\u0435\u0442 \u043e\u0431\u0432\u043e\u0434\u043a\u0438" : "Stroke color",
     designStrokeWidth: isRussian ? "\u0422\u043e\u043b\u0449\u0438\u043d\u0430" : "Thickness",
+    designShadow: isRussian ? "\u0422\u0435\u043d\u044c" : "Shadow",
+    designShadowColor: isRussian ? "\u0426\u0432\u0435\u0442 \u0442\u0435\u043d\u0438" : "Shadow color",
+    designShadowOpacity: isRussian ? "\u041f\u0440\u043e\u0437\u0440\u0430\u0447\u043d\u043e\u0441\u0442\u044c" : "Opacity",
+    designShadowBlur: isRussian ? "\u0420\u0430\u0437\u043c\u044b\u0442\u0438\u0435" : "Blur",
+    designShadowOffsetX: isRussian ? "\u0421\u0434\u0432\u0438\u0433 X" : "Offset X",
+    designShadowOffsetY: isRussian ? "\u0421\u0434\u0432\u0438\u0433 Y" : "Offset Y",
+    designPrintTexture: isRussian ? "\u0424\u0430\u043a\u0442\u0443\u0440\u0430 \u043f\u0435\u0447\u0430\u0442\u0438" : "Print texture",
+    designPrintTextureAmount: isRussian ? "\u0421\u0438\u043b\u0430" : "Amount",
+    designPrintTextureGrain: isRussian ? "\u0417\u0435\u0440\u043d\u043e" : "Grain",
+    designPrintTextureDistress: isRussian ? "\u041f\u043e\u0442\u0435\u0440\u0442\u043e\u0441\u0442\u044c" : "Distress",
+    designPrintTextureFade: isRussian ? "\u0412\u044b\u0446\u0432\u0435\u0442\u0430\u043d\u0438\u0435" : "Fade",
+    designPrintTextureFabric: isRussian ? "\u0422\u043a\u0430\u043d\u0435\u0432\u044b\u0439 \u0448\u0443\u043c" : "Fabric noise",
     designPatternPreset: isRussian ? "\u041f\u0430\u0442\u0442\u0435\u0440\u043d" : "Pattern",
     designTextureUpload: isRussian ? "\u0417\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044c \u0442\u0435\u043a\u0441\u0442\u0443\u0440\u0443" : "Upload texture",
     designTextureReplace: isRussian ? "\u0417\u0430\u043c\u0435\u043d\u0438\u0442\u044c \u0442\u0435\u043a\u0441\u0442\u0443\u0440\u0443" : "Replace texture",
@@ -1890,9 +2103,57 @@ const getLocaleStrings = (copy: UvDecalEditorProps["copy"]) => {
     textColorHint: isRussian
       ? "Выберите цвет для нового текстового слоя."
       : "Choose the color for the new text layer.",
+    textStrokeColorHint: isRussian
+      ? "Выберите цвет обводки для текста."
+      : "Choose the outline color for the text.",
+    textStrokeWidthHint: isRussian
+      ? "Настройте толщину обводки текста. 0 отключает эффект."
+      : "Adjust the text outline thickness. Set it to 0 to disable the effect.",
+    textShadowColorHint: isRussian
+      ? "Выберите цвет тени для текстового слоя."
+      : "Choose the shadow color for the text layer.",
+    textShadowOpacityHint: isRussian
+      ? "Настройте прозрачность тени текста."
+      : "Adjust the text shadow opacity.",
+    textShadowBlurHint: isRussian
+      ? "Настройте мягкость и размытие тени текста."
+      : "Adjust the softness and blur of the text shadow.",
+    textShadowOffsetXHint: isRussian
+      ? "Сдвиньте тень текста по горизонтали."
+      : "Move the text shadow horizontally.",
+    textShadowOffsetYHint: isRussian
+      ? "Сдвиньте тень текста по вертикали."
+      : "Move the text shadow vertically.",
+    textPrintModeHint: isRussian
+      ? "Быстро переключить готовый одежный режим для текста: нашивка, винтаж, неон, шелкография или вышивка."
+      : "Quickly switch a ready-made apparel print mode for the text: patch, vintage, neon, silkscreen, or embroidery.",
+    textPrintTextureHint: isRussian
+      ? "Добавить фактуру печати к текстовому слою, чтобы он выглядел менее цифровым."
+      : "Add a print texture effect to the text layer so it feels less digitally perfect.",
+    textPrintTextureAmountHint: isRussian
+      ? "Общая сила фактуры печати для текста."
+      : "Overall strength of the print texture on the text.",
+    textPrintTextureGrainHint: isRussian
+      ? "Добавить мелкое зерно и шум печати."
+      : "Add fine grain and print noise.",
+    textPrintTextureDistressHint: isRussian
+      ? "Сделать края и заливку текста более потёртыми."
+      : "Make the text edges and fill look more distressed.",
+    textPrintTextureFadeHint: isRussian
+      ? "Добавить эффект выцветшей печати."
+      : "Add a faded print effect.",
+    textPrintTextureFabricHint: isRussian
+      ? "Добавить лёгкий тканевый шум поверх текста."
+      : "Add subtle fabric noise over the text.",
     addTextHint: isRussian
       ? "Создать новый слой-декаль из введённого текста и сделать его активным."
       : "Create a new decal layer from the entered text and make it active.",
+    designStyleHint: isRussian
+      ? "\u0411\u044b\u0441\u0442\u0440\u043e \u043f\u0440\u0438\u043c\u0435\u043d\u0438\u0442\u044c \u0433\u043e\u0442\u043e\u0432\u044b\u0439 \u043d\u0430\u0431\u043e\u0440 \u0437\u0430\u043b\u0438\u0432\u043a\u0438, \u043e\u0431\u0432\u043e\u0434\u043a\u0438 \u0438 \u0442\u0435\u043d\u0438 \u0434\u043b\u044f \u0444\u0438\u0433\u0443\u0440\u044b."
+      : "Quickly apply a ready-made combination of fill, outline, and shadow to the shape.",
+    designPrintModeHint: isRussian
+      ? "\u0411\u044b\u0441\u0442\u0440\u043e \u043f\u0435\u0440\u0435\u043a\u043b\u044e\u0447\u0438\u0442\u044c \u0433\u043e\u0442\u043e\u0432\u044b\u0439 \u043e\u0434\u0435\u0436\u043d\u044b\u0439 \u0440\u0435\u0436\u0438\u043c \u043f\u0440\u0438\u043d\u0442\u0430: \u043d\u0430\u0448\u0438\u0432\u043a\u0430, \u0432\u0438\u043d\u0442\u0430\u0436, \u043d\u0435\u043e\u043d, \u0448\u0435\u043b\u043a\u043e\u0433\u0440\u0430\u0444\u0438\u044f \u0438\u043b\u0438 \u0432\u044b\u0448\u0438\u0432\u043a\u0430."
+      : "Quickly switch a ready-made apparel print mode: patch, vintage, neon, silkscreen, or embroidery.",
     designFillHint: isRussian
       ? "\u0412\u044b\u0431\u0440\u0430\u0442\u044c, \u0447\u0435\u043c \u0431\u0443\u0434\u0435\u0442 \u0437\u0430\u043f\u043e\u043b\u043d\u0435\u043d\u0430 \u0444\u0438\u0433\u0443\u0440\u0430: \u0446\u0432\u0435\u0442\u043e\u043c, \u043f\u0430\u0442\u0442\u0435\u0440\u043d\u043e\u043c, \u0441\u0432\u043e\u0435\u0439 \u0442\u0435\u043a\u0441\u0442\u0443\u0440\u043e\u0439 \u0438\u043b\u0438 \u0433\u0440\u0430\u0434\u0438\u0435\u043d\u0442\u043e\u043c."
       : "Choose how the shape should be filled: a solid color, a pattern, a custom texture, or a gradient.",
@@ -1905,6 +2166,39 @@ const getLocaleStrings = (copy: UvDecalEditorProps["copy"]) => {
     designStrokeWidthHint: isRussian
       ? "\u041d\u0430\u0441\u0442\u0440\u043e\u0438\u0442\u044c \u0442\u043e\u043b\u0449\u0438\u043d\u0443 \u0432\u043d\u0435\u0448\u043d\u0435\u0439 \u043e\u0431\u0432\u043e\u0434\u043a\u0438. 0 \u043e\u0442\u043a\u043b\u044e\u0447\u0430\u0435\u0442 \u044d\u0444\u0444\u0435\u043a\u0442."
       : "Adjust the outer outline thickness. Set it to 0 to disable the effect.",
+    designShadowColorHint: isRussian
+      ? "\u0412\u044b\u0431\u0440\u0430\u0442\u044c \u0446\u0432\u0435\u0442 \u0442\u0435\u043d\u0438 \u0434\u043b\u044f \u0444\u0438\u0433\u0443\u0440\u044b."
+      : "Choose the shadow color for the shape.",
+    designShadowOpacityHint: isRussian
+      ? "\u041d\u0430\u0441\u0442\u0440\u043e\u0438\u0442\u044c \u043f\u0440\u043e\u0437\u0440\u0430\u0447\u043d\u043e\u0441\u0442\u044c \u0442\u0435\u043d\u0438."
+      : "Adjust the shadow opacity.",
+    designShadowBlurHint: isRussian
+      ? "\u041d\u0430\u0441\u0442\u0440\u043e\u0438\u0442\u044c \u043c\u044f\u0433\u043a\u043e\u0441\u0442\u044c \u0438 \u0440\u0430\u0437\u043c\u044b\u0442\u0438\u0435 \u0442\u0435\u043d\u0438."
+      : "Adjust the softness and blur of the shadow.",
+    designShadowOffsetXHint: isRussian
+      ? "\u0421\u0434\u0432\u0438\u043d\u0443\u0442\u044c \u0442\u0435\u043d\u044c \u0444\u0438\u0433\u0443\u0440\u044b \u043f\u043e \u0433\u043e\u0440\u0438\u0437\u043e\u043d\u0442\u0430\u043b\u0438."
+      : "Move the shape shadow horizontally.",
+    designShadowOffsetYHint: isRussian
+      ? "\u0421\u0434\u0432\u0438\u043d\u0443\u0442\u044c \u0442\u0435\u043d\u044c \u0444\u0438\u0433\u0443\u0440\u044b \u043f\u043e \u0432\u0435\u0440\u0442\u0438\u043a\u0430\u043b\u0438."
+      : "Move the shape shadow vertically.",
+    designPrintTextureHint: isRussian
+      ? "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0444\u0430\u043a\u0442\u0443\u0440\u0443 \u043f\u0435\u0447\u0430\u0442\u0438 \u043a \u0444\u0438\u0433\u0443\u0440\u0435, \u0447\u0442\u043e\u0431\u044b \u043e\u043d\u0430 \u0432\u044b\u0433\u043b\u044f\u0434\u0435\u043b\u0430 \u043c\u0435\u043d\u0435\u0435 \u0446\u0438\u0444\u0440\u043e\u0432\u043e\u0439."
+      : "Add a print texture effect to the shape so it looks less digitally perfect.",
+    designPrintTextureAmountHint: isRussian
+      ? "\u041e\u0431\u0449\u0430\u044f \u0441\u0438\u043b\u0430 \u0444\u0430\u043a\u0442\u0443\u0440\u044b \u043f\u0435\u0447\u0430\u0442\u0438."
+      : "Overall strength of the print texture.",
+    designPrintTextureGrainHint: isRussian
+      ? "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u043c\u0435\u043b\u043a\u043e\u0435 \u0437\u0435\u0440\u043d\u043e \u0438 \u0448\u0443\u043c \u043f\u0435\u0447\u0430\u0442\u0438."
+      : "Add fine grain and print noise.",
+    designPrintTextureDistressHint: isRussian
+      ? "\u0421\u0434\u0435\u043b\u0430\u0442\u044c \u043a\u0440\u0430\u044f \u0438 \u0437\u0430\u043b\u0438\u0432\u043a\u0443 \u0444\u0438\u0433\u0443\u0440\u044b \u0431\u043e\u043b\u0435\u0435 \u043f\u043e\u0442\u0451\u0440\u0442\u044b\u043c\u0438."
+      : "Make the shape edges and fill more distressed.",
+    designPrintTextureFadeHint: isRussian
+      ? "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u044d\u0444\u0444\u0435\u043a\u0442 \u0432\u044b\u0446\u0432\u0435\u0442\u0448\u0435\u0439 \u043f\u0435\u0447\u0430\u0442\u0438."
+      : "Add a faded print effect.",
+    designPrintTextureFabricHint: isRussian
+      ? "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u043b\u0451\u0433\u043a\u0438\u0439 \u0442\u043a\u0430\u043d\u0435\u0432\u044b\u0439 \u0448\u0443\u043c \u043f\u043e\u0432\u0435\u0440\u0445 \u0444\u0438\u0433\u0443\u0440\u044b."
+      : "Add subtle fabric noise over the shape.",
     designPatternHint: isRussian
       ? "\u0412\u044b\u0431\u0440\u0430\u0442\u044c \u043f\u0430\u0442\u0442\u0435\u0440\u043d, \u043a\u043e\u0442\u043e\u0440\u044b\u043c \u0431\u0443\u0434\u0435\u0442 \u0437\u0430\u043f\u043e\u043b\u043d\u0435\u043d\u0430 \u0444\u0438\u0433\u0443\u0440\u0430."
       : "Choose the pattern used to fill the shape.",
@@ -2050,11 +2344,23 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
   const [brushSoftness, setBrushSoftness] = useState(38);
   const [brushPresetKind, setBrushPresetKind] = useState<BrushPresetKind>("brush");
   const [brushPresetId, setBrushPresetId] = useState(DEFAULT_BRUSH_PRESET_ID);
+  const [brushPresetGroupFilter, setBrushPresetGroupFilter] = useState("all");
   const [isBrushPresetMenuOpen, setIsBrushPresetMenuOpen] = useState(false);
   const [textValue, setTextValue] = useState("");
   const [textFontFamily, setTextFontFamily] = useState(TEXT_FONT_OPTIONS[0]?.value || 'Arial, sans-serif');
   const [textFontSize, setTextFontSize] = useState(96);
   const [textColor, setTextColor] = useState("#111111");
+  const [textPrintModeId, setTextPrintModeId] = useState<PrintModeId | null>(null);
+  const [textStrokeColor, setTextStrokeColor] = useState(getDefaultTextStrokeStyle().strokeColor);
+  const [textStrokeWidth, setTextStrokeWidth] = useState(getDefaultTextStrokeStyle().strokeWidth);
+  const [textShadowColor, setTextShadowColor] = useState(getDefaultTextShadowStyle(96).shadowColor);
+  const [textShadowOpacity, setTextShadowOpacity] = useState(getDefaultTextShadowStyle(96).shadowOpacity);
+  const [textShadowBlur, setTextShadowBlur] = useState(getDefaultTextShadowStyle(96).shadowBlur);
+  const [textShadowOffsetX, setTextShadowOffsetX] = useState(getDefaultTextShadowStyle(96).shadowOffsetX);
+  const [textShadowOffsetY, setTextShadowOffsetY] = useState(getDefaultTextShadowStyle(96).shadowOffsetY);
+  const [textPrintTexture, setTextPrintTexture] = useState<PrintTextureStyle>(() => ({
+    ...DEFAULT_PRINT_TEXTURE_STYLE,
+  }));
   const [showMaskPreview, setShowMaskPreview] = useState(false);
   const [snapEnabled, setSnapEnabled] = useState(false);
   const [soloLayerId, setSoloLayerId] = useState<string | null>(null);
@@ -2080,6 +2386,20 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
   const activeSlot = selectedSlot || slotOptions[0]?.id || null;
   const activeLoadedMesh = loadedMesh && loadedMesh.meshName === activeSlot ? loadedMesh : null;
   const activeBrushPresetOptions = brushPresetKind === "stamp" ? STAMP_PRESETS : BRUSH_PRESETS;
+  const activeBrushPresetGroups = useMemo(
+    () =>
+      Array.from(new Set(activeBrushPresetOptions.map((preset) => preset.group))).sort((left, right) =>
+        left.localeCompare(right)
+      ),
+    [activeBrushPresetOptions]
+  );
+  const filteredBrushPresetOptions = useMemo(
+    () =>
+      brushPresetGroupFilter === "all"
+        ? activeBrushPresetOptions
+        : activeBrushPresetOptions.filter((preset) => preset.group === brushPresetGroupFilter),
+    [activeBrushPresetOptions, brushPresetGroupFilter]
+  );
   const activeBrushPreset: BrushPreset | null =
     activeBrushPresetOptions.find((preset) => preset.id === brushPresetId) ||
     activeBrushPresetOptions[0] ||
@@ -2132,6 +2452,18 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
   ]);
 
   useEffect(() => {
+    if (brushPresetGroupFilter === "all") {
+      return;
+    }
+
+    if (activeBrushPresetGroups.includes(brushPresetGroupFilter)) {
+      return;
+    }
+
+    setBrushPresetGroupFilter("all");
+  }, [activeBrushPresetGroups, brushPresetGroupFilter]);
+
+  useEffect(() => {
     if (!activeBrushPresetOptions.some((preset) => preset.id === brushPresetId)) {
       setBrushPresetId(activeBrushPresetOptions[0]?.id || DEFAULT_BRUSH_PRESET_ID);
     }
@@ -2139,6 +2471,7 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
 
   useEffect(() => {
     setIsBrushPresetMenuOpen(false);
+    setBrushPresetGroupFilter("all");
   }, [brushPresetKind]);
 
   useEffect(() => {
@@ -2304,17 +2637,107 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
       fontFamily: selectedTextLayer.textStyle.fontFamily,
       fontSize: selectedTextLayer.textStyle.fontSize,
       color: selectedTextLayer.textStyle.color,
+      strokeColor: selectedTextLayer.textStyle.strokeColor,
+      strokeWidth: selectedTextLayer.textStyle.strokeWidth,
+      shadowColor: selectedTextLayer.textStyle.shadowColor,
+      shadowOpacity: selectedTextLayer.textStyle.shadowOpacity,
+      shadowBlur: selectedTextLayer.textStyle.shadowBlur,
+      shadowOffsetX: selectedTextLayer.textStyle.shadowOffsetX,
+      shadowOffsetY: selectedTextLayer.textStyle.shadowOffsetY,
+      printTexture: serializePrintTextureStyle(selectedTextLayer.textStyle.printTexture),
+      printModeId: sanitizePrintModeId(selectedTextLayer.textStyle.printModeId),
     });
     if (lastSyncedTextLayerSignatureRef.current === nextSignature) {
       return;
     }
 
     lastSyncedTextLayerSignatureRef.current = nextSignature;
+    const defaultStroke = getDefaultTextStrokeStyle();
+    const defaultShadow = getDefaultTextShadowStyle(selectedTextLayer.textStyle.fontSize);
     setTextValue(selectedTextLayer.textStyle.text);
     setTextFontFamily(selectedTextLayer.textStyle.fontFamily);
     setTextFontSize(selectedTextLayer.textStyle.fontSize);
     setTextColor(selectedTextLayer.textStyle.color);
+    setTextPrintModeId(sanitizePrintModeId(selectedTextLayer.textStyle.printModeId));
+    setTextStrokeColor(selectedTextLayer.textStyle.strokeColor || defaultStroke.strokeColor);
+    setTextStrokeWidth(
+      typeof selectedTextLayer.textStyle.strokeWidth === "number"
+        ? selectedTextLayer.textStyle.strokeWidth
+        : defaultStroke.strokeWidth
+    );
+    setTextShadowColor(selectedTextLayer.textStyle.shadowColor || defaultShadow.shadowColor);
+    setTextShadowOpacity(
+      typeof selectedTextLayer.textStyle.shadowOpacity === "number"
+        ? selectedTextLayer.textStyle.shadowOpacity
+        : defaultShadow.shadowOpacity
+    );
+    setTextShadowBlur(
+      typeof selectedTextLayer.textStyle.shadowBlur === "number"
+        ? selectedTextLayer.textStyle.shadowBlur
+        : defaultShadow.shadowBlur
+    );
+    setTextShadowOffsetX(
+      typeof selectedTextLayer.textStyle.shadowOffsetX === "number"
+        ? selectedTextLayer.textStyle.shadowOffsetX
+        : defaultShadow.shadowOffsetX
+    );
+    setTextShadowOffsetY(
+      typeof selectedTextLayer.textStyle.shadowOffsetY === "number"
+        ? selectedTextLayer.textStyle.shadowOffsetY
+        : defaultShadow.shadowOffsetY
+    );
+    setTextPrintTexture(sanitizePrintTextureStyle(selectedTextLayer.textStyle.printTexture));
   }, [selectedTextLayer]);
+
+  const textPrintModeOptions = useMemo(
+    () => [
+      { value: "custom", label: locale.textPrintModeCustom },
+      { value: "patch", label: locale.textPrintModePatch },
+      { value: "vintage", label: locale.textPrintModeVintage },
+      { value: "neon", label: locale.textPrintModeNeon },
+      { value: "silkscreen", label: locale.textPrintModeSilkscreen },
+      { value: "embroidery", label: locale.textPrintModeEmbroidery },
+    ],
+    [
+      locale.textPrintModeCustom,
+      locale.textPrintModeEmbroidery,
+      locale.textPrintModeNeon,
+      locale.textPrintModePatch,
+      locale.textPrintModeSilkscreen,
+      locale.textPrintModeVintage,
+    ]
+  );
+
+  const markTextPrintModeCustom = () => setTextPrintModeId(null);
+
+  const applyTextPrintModePresetToEditor = (nextPrintModeId: PrintModeId) => {
+    const nextStyle = applyTextPrintModePreset(
+      {
+        color: textColor,
+        fontSize: textFontSize,
+        strokeColor: textStrokeColor,
+        strokeWidth: textStrokeWidth,
+        shadowColor: textShadowColor,
+        shadowOpacity: textShadowOpacity,
+        shadowBlur: textShadowBlur,
+        shadowOffsetX: textShadowOffsetX,
+        shadowOffsetY: textShadowOffsetY,
+        printTexture: textPrintTexture,
+        printModeId: textPrintModeId,
+      },
+      nextPrintModeId
+    );
+
+    setTextStrokeColor(nextStyle.strokeColor);
+    setTextStrokeWidth(nextStyle.strokeWidth);
+    setTextShadowColor(nextStyle.shadowColor);
+    setTextShadowOpacity(nextStyle.shadowOpacity);
+    setTextShadowBlur(nextStyle.shadowBlur);
+    setTextShadowOffsetX(nextStyle.shadowOffsetX);
+    setTextShadowOffsetY(nextStyle.shadowOffsetY);
+    setTextPrintTexture(sanitizePrintTextureStyle(nextStyle.printTexture));
+    setTextPrintModeId(nextPrintModeId);
+  };
 
   const getBlendModeLabel = (blendMode: UvLayerBlendMode) => {
     switch (blendMode) {
@@ -4144,6 +4567,15 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
       fontFamily: textFontFamily,
       fontSize: textFontSize,
       color: textColor,
+      strokeColor: textStrokeColor,
+      strokeWidth: textStrokeWidth,
+      shadowColor: textShadowColor,
+      shadowOpacity: textShadowOpacity,
+      shadowBlur: textShadowBlur,
+      shadowOffsetX: textShadowOffsetX,
+      shadowOffsetY: textShadowOffsetY,
+      printTexture: textPrintTexture,
+      printModeId: textPrintModeId,
       isRussian: locale.isRussian,
     });
     if (!generated) {
@@ -4177,7 +4609,16 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
       currentTextStyle.text === normalizedText &&
       currentTextStyle.fontFamily === textFontFamily &&
       currentTextStyle.fontSize === textFontSize &&
-      currentTextStyle.color === textColor
+      currentTextStyle.color === textColor &&
+      currentTextStyle.strokeColor === textStrokeColor &&
+      currentTextStyle.strokeWidth === textStrokeWidth &&
+      currentTextStyle.shadowColor === textShadowColor &&
+      currentTextStyle.shadowOpacity === textShadowOpacity &&
+      currentTextStyle.shadowBlur === textShadowBlur &&
+      currentTextStyle.shadowOffsetX === textShadowOffsetX &&
+      currentTextStyle.shadowOffsetY === textShadowOffsetY &&
+      sanitizePrintModeId(currentTextStyle.printModeId) === textPrintModeId &&
+      serializePrintTextureStyle(currentTextStyle.printTexture) === serializePrintTextureStyle(textPrintTexture)
     ) {
       return;
     }
@@ -4198,6 +4639,15 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
         fontFamily: textFontFamily,
         fontSize: textFontSize,
         color: textColor,
+        strokeColor: textStrokeColor,
+        strokeWidth: textStrokeWidth,
+        shadowColor: textShadowColor,
+        shadowOpacity: textShadowOpacity,
+        shadowBlur: textShadowBlur,
+        shadowOffsetX: textShadowOffsetX,
+        shadowOffsetY: textShadowOffsetY,
+        printTexture: textPrintTexture,
+        printModeId: textPrintModeId,
         isRussian: locale.isRussian,
       });
       if (!generated || cancelled) {
@@ -4229,6 +4679,15 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     textColor,
     textFontFamily,
     textFontSize,
+    textStrokeColor,
+    textStrokeWidth,
+    textShadowBlur,
+    textShadowColor,
+    textShadowOffsetX,
+    textShadowOffsetY,
+    textShadowOpacity,
+    textPrintModeId,
+    textPrintTexture,
     textValue,
   ]);
 
@@ -4871,7 +5330,31 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
 
                       {isBrushPresetMenuOpen ? (
                         <div className="uv-editor__preset-menu" role="listbox" aria-label={locale.brushPreset}>
-                          {activeBrushPresetOptions.map((preset) => {
+                          <div className="uv-editor__chip-row" role="presentation">
+                            <button
+                              type="button"
+                              className={`uv-editor__tool uv-editor__tool--secondary${
+                                brushPresetGroupFilter === "all" ? " uv-editor__tool--active" : ""
+                              }`}
+                              onClick={() => setBrushPresetGroupFilter("all")}
+                            >
+                              {locale.isRussian ? "Все" : "All"}
+                            </button>
+                            {activeBrushPresetGroups.map((group) => (
+                              <button
+                                key={group}
+                                type="button"
+                                className={`uv-editor__tool uv-editor__tool--secondary${
+                                  brushPresetGroupFilter === group ? " uv-editor__tool--active" : ""
+                                }`}
+                                onClick={() => setBrushPresetGroupFilter(group)}
+                              >
+                                {group}
+                              </button>
+                            ))}
+                          </div>
+
+                          {filteredBrushPresetOptions.map((preset) => {
                             const isSelected = preset.id === activeBrushPreset?.id;
 
                             return (
@@ -5004,6 +5487,341 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
                           onChange={(event) => setTextFontSize(Number(event.target.value))}
                         />
                         <span className="uv-editor__value-chip">{textFontSize}px</span>
+                      </div>
+                    </div>
+
+                    <div className="uv-editor__control-group">
+                      <div className="uv-editor__control-label">{locale.textPrintMode}</div>
+                      <select
+                        className="uv-editor__text-select"
+                        value={textPrintModeId || "custom"}
+                        {...getTooltipProps(locale.textPrintModeHint)}
+                        onChange={(event) => {
+                          const nextValue = sanitizePrintModeId(event.target.value);
+                          if (!nextValue) {
+                            setTextPrintModeId(null);
+                            return;
+                          }
+                          applyTextPrintModePresetToEditor(nextValue);
+                        }}
+                      >
+                        {textPrintModeOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="uv-editor__control-group">
+                      <div className="uv-editor__control-label">{locale.textStroke}</div>
+                      <div className="uv-editor__shadow-grid">
+                        <div className="uv-editor__control-group">
+                          <div className="uv-editor__control-label">{locale.textStrokeColor}</div>
+                          <div className="uv-editor__design-color-row uv-editor__design-color-row--compact">
+                            <input
+                              className="uv-editor__brush-color uv-editor__brush-color--compact"
+                              type="color"
+                              value={textStrokeColor}
+                              {...getTooltipProps(locale.textStrokeColorHint)}
+                              onChange={(event) => {
+                                markTextPrintModeCustom();
+                                setTextStrokeColor(event.target.value);
+                              }}
+                            />
+                            <span className="uv-editor__value-chip uv-editor__design-color-chip uv-editor__design-color-chip--compact">
+                              {textStrokeColor.toUpperCase()}
+                            </span>
+                          </div>
+                        </div>
+
+                        <NumericSliderControl
+                          label={locale.textStrokeWidth}
+                          tooltip={locale.textStrokeWidthHint}
+                          sliderMin={0}
+                          sliderMax={12}
+                          sliderStep={0.1}
+                          sliderValue={textStrokeWidth}
+                          inputMin={0}
+                          inputMax={12}
+                          inputStep={0.1}
+                          inputValue={textStrokeWidth}
+                          onSliderChange={(value) => {
+                            markTextPrintModeCustom();
+                            setTextStrokeWidth(value);
+                          }}
+                          onInputChange={(value) => {
+                            markTextPrintModeCustom();
+                            setTextStrokeWidth(value);
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="uv-editor__control-group">
+                      <div className="uv-editor__control-label">{locale.textShadow}</div>
+
+                      <div className="uv-editor__shadow-grid">
+                        <div className="uv-editor__control-group">
+                          <div className="uv-editor__control-label">{locale.textShadowColor}</div>
+                          <div className="uv-editor__design-color-row uv-editor__design-color-row--compact">
+                            <input
+                              className="uv-editor__brush-color uv-editor__brush-color--compact"
+                              type="color"
+                              value={textShadowColor}
+                              {...getTooltipProps(locale.textShadowColorHint)}
+                              onChange={(event) => {
+                                markTextPrintModeCustom();
+                                setTextShadowColor(event.target.value);
+                              }}
+                            />
+                            <span className="uv-editor__value-chip uv-editor__design-color-chip uv-editor__design-color-chip--compact">
+                              {textShadowColor.toUpperCase()}
+                            </span>
+                          </div>
+                        </div>
+
+                        <NumericSliderControl
+                          label={locale.textShadowOpacity}
+                          tooltip={locale.textShadowOpacityHint}
+                          sliderMin={0}
+                          sliderMax={100}
+                          sliderStep={1}
+                          sliderValue={Math.round(textShadowOpacity * 100)}
+                          inputMin={0}
+                          inputMax={100}
+                          inputStep={1}
+                          inputValue={textShadowOpacity * 100}
+                          inputSuffix="%"
+                          onSliderChange={(value) => {
+                            markTextPrintModeCustom();
+                            setTextShadowOpacity(value / 100);
+                          }}
+                          onInputChange={(value) => {
+                            markTextPrintModeCustom();
+                            setTextShadowOpacity(value / 100);
+                          }}
+                        />
+                      </div>
+
+                      <NumericSliderControl
+                        label={locale.textShadowBlur}
+                        tooltip={locale.textShadowBlurHint}
+                        sliderMin={0}
+                        sliderMax={40}
+                        sliderStep={0.1}
+                        sliderValue={textShadowBlur}
+                        inputMin={0}
+                        inputMax={40}
+                        inputStep={0.1}
+                        inputValue={textShadowBlur}
+                        onSliderChange={(value) => {
+                          markTextPrintModeCustom();
+                          setTextShadowBlur(value);
+                        }}
+                        onInputChange={(value) => {
+                          markTextPrintModeCustom();
+                          setTextShadowBlur(value);
+                        }}
+                      />
+
+                      <div className="uv-editor__shadow-grid">
+                        <NumericSliderControl
+                          label={locale.textShadowOffsetX}
+                          tooltip={locale.textShadowOffsetXHint}
+                          sliderMin={-40}
+                          sliderMax={40}
+                          sliderStep={0.1}
+                          sliderValue={textShadowOffsetX}
+                          inputMin={-40}
+                          inputMax={40}
+                          inputStep={0.1}
+                          inputValue={textShadowOffsetX}
+                          onSliderChange={(value) => {
+                            markTextPrintModeCustom();
+                            setTextShadowOffsetX(value);
+                          }}
+                          onInputChange={(value) => {
+                            markTextPrintModeCustom();
+                            setTextShadowOffsetX(value);
+                          }}
+                        />
+                        <NumericSliderControl
+                          label={locale.textShadowOffsetY}
+                          tooltip={locale.textShadowOffsetYHint}
+                          sliderMin={-40}
+                          sliderMax={40}
+                          sliderStep={0.1}
+                          sliderValue={textShadowOffsetY}
+                          inputMin={-40}
+                          inputMax={40}
+                          inputStep={0.1}
+                          inputValue={textShadowOffsetY}
+                          onSliderChange={(value) => {
+                            markTextPrintModeCustom();
+                            setTextShadowOffsetY(value);
+                          }}
+                          onInputChange={(value) => {
+                            markTextPrintModeCustom();
+                            setTextShadowOffsetY(value);
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="uv-editor__control-group">
+                      <div className="uv-editor__control-label">{locale.textPrintTexture}</div>
+
+                      <NumericSliderControl
+                        label={locale.textPrintTextureAmount}
+                        tooltip={locale.textPrintTextureAmountHint}
+                        sliderMin={0}
+                        sliderMax={100}
+                        sliderStep={1}
+                        sliderValue={Math.round(textPrintTexture.amount * 100)}
+                        inputMin={0}
+                        inputMax={100}
+                        inputStep={1}
+                        inputValue={textPrintTexture.amount * 100}
+                        inputSuffix="%"
+                        onSliderChange={(value) =>
+                          {
+                            markTextPrintModeCustom();
+                            setTextPrintTexture((current) =>
+                              sanitizePrintTextureStyle({ ...current, amount: value / 100 })
+                            );
+                          }
+                        }
+                        onInputChange={(value) =>
+                          {
+                            markTextPrintModeCustom();
+                            setTextPrintTexture((current) =>
+                              sanitizePrintTextureStyle({ ...current, amount: value / 100 })
+                            );
+                          }
+                        }
+                      />
+
+                      <div className="uv-editor__shadow-grid">
+                        <NumericSliderControl
+                          label={locale.textPrintTextureGrain}
+                          tooltip={locale.textPrintTextureGrainHint}
+                          sliderMin={0}
+                          sliderMax={100}
+                          sliderStep={1}
+                          sliderValue={Math.round(textPrintTexture.grain * 100)}
+                          inputMin={0}
+                          inputMax={100}
+                          inputStep={1}
+                          inputValue={textPrintTexture.grain * 100}
+                          inputSuffix="%"
+                          onSliderChange={(value) =>
+                            {
+                              markTextPrintModeCustom();
+                              setTextPrintTexture((current) =>
+                                sanitizePrintTextureStyle({ ...current, grain: value / 100 })
+                              );
+                            }
+                          }
+                          onInputChange={(value) =>
+                            {
+                              markTextPrintModeCustom();
+                              setTextPrintTexture((current) =>
+                                sanitizePrintTextureStyle({ ...current, grain: value / 100 })
+                              );
+                            }
+                          }
+                        />
+                        <NumericSliderControl
+                          label={locale.textPrintTextureDistress}
+                          tooltip={locale.textPrintTextureDistressHint}
+                          sliderMin={0}
+                          sliderMax={100}
+                          sliderStep={1}
+                          sliderValue={Math.round(textPrintTexture.distress * 100)}
+                          inputMin={0}
+                          inputMax={100}
+                          inputStep={1}
+                          inputValue={textPrintTexture.distress * 100}
+                          inputSuffix="%"
+                          onSliderChange={(value) =>
+                            {
+                              markTextPrintModeCustom();
+                              setTextPrintTexture((current) =>
+                                sanitizePrintTextureStyle({ ...current, distress: value / 100 })
+                              );
+                            }
+                          }
+                          onInputChange={(value) =>
+                            {
+                              markTextPrintModeCustom();
+                              setTextPrintTexture((current) =>
+                                sanitizePrintTextureStyle({ ...current, distress: value / 100 })
+                              );
+                            }
+                          }
+                        />
+                      </div>
+
+                      <div className="uv-editor__shadow-grid">
+                        <NumericSliderControl
+                          label={locale.textPrintTextureFade}
+                          tooltip={locale.textPrintTextureFadeHint}
+                          sliderMin={0}
+                          sliderMax={100}
+                          sliderStep={1}
+                          sliderValue={Math.round(textPrintTexture.fade * 100)}
+                          inputMin={0}
+                          inputMax={100}
+                          inputStep={1}
+                          inputValue={textPrintTexture.fade * 100}
+                          inputSuffix="%"
+                          onSliderChange={(value) =>
+                            {
+                              markTextPrintModeCustom();
+                              setTextPrintTexture((current) =>
+                                sanitizePrintTextureStyle({ ...current, fade: value / 100 })
+                              );
+                            }
+                          }
+                          onInputChange={(value) =>
+                            {
+                              markTextPrintModeCustom();
+                              setTextPrintTexture((current) =>
+                                sanitizePrintTextureStyle({ ...current, fade: value / 100 })
+                              );
+                            }
+                          }
+                        />
+                        <NumericSliderControl
+                          label={locale.textPrintTextureFabric}
+                          tooltip={locale.textPrintTextureFabricHint}
+                          sliderMin={0}
+                          sliderMax={100}
+                          sliderStep={1}
+                          sliderValue={Math.round(textPrintTexture.fabricNoise * 100)}
+                          inputMin={0}
+                          inputMax={100}
+                          inputStep={1}
+                          inputValue={textPrintTexture.fabricNoise * 100}
+                          inputSuffix="%"
+                          onSliderChange={(value) =>
+                            {
+                              markTextPrintModeCustom();
+                              setTextPrintTexture((current) =>
+                                sanitizePrintTextureStyle({ ...current, fabricNoise: value / 100 })
+                              );
+                            }
+                          }
+                          onInputChange={(value) =>
+                            {
+                              markTextPrintModeCustom();
+                              setTextPrintTexture((current) =>
+                                sanitizePrintTextureStyle({ ...current, fabricNoise: value / 100 })
+                              );
+                            }
+                          }
+                        />
                       </div>
                     </div>
 

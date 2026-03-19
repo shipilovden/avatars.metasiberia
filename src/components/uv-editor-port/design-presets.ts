@@ -1,3 +1,14 @@
+import {
+  DEFAULT_PRINT_TEXTURE_STYLE,
+  isPrintTextureDisabled,
+  resolvePrintTextureStrengths,
+  sanitizePrintTextureStyle,
+  serializePrintTextureStyle,
+} from "./print-texture";
+import { sanitizePrintModeId } from "./print-mode-presets";
+import type { PrintModeId } from "./print-mode-presets";
+import type { PrintTextureStyle } from "./print-texture";
+
 export type DesignFillMode = "solid" | "pattern" | "gradient" | "texture";
 
 export type DesignShapePreset = {
@@ -25,6 +36,24 @@ export type DesignGradientPreset = {
   renderDefinition: (fillId: string) => string;
 };
 
+export type DesignStylePreset = {
+  id: string;
+  name: string;
+  previewSrc: string;
+  fillMode: DesignFillMode;
+  solidColor: string;
+  strokeColor: string;
+  strokeWidth: number;
+  shadowColor: string;
+  shadowOpacity: number;
+  shadowBlur: number;
+  shadowOffsetX: number;
+  shadowOffsetY: number;
+  patternPresetId: string;
+  gradientPresetId: string;
+  patternControls: DesignPatternControls;
+};
+
 export type DesignPatternControls = {
   scale: number;
   offsetX: number;
@@ -47,12 +76,19 @@ export type DesignLayerStyle = {
   solidColor: string;
   strokeColor: string;
   strokeWidth: number;
+  shadowColor: string;
+  shadowOpacity: number;
+  shadowBlur: number;
+  shadowOffsetX: number;
+  shadowOffsetY: number;
   textureDataUrl: string;
   textureFileName: string;
   textureWidth: number;
   textureHeight: number;
   textureAutoCenter: boolean;
   textureContentBounds: DesignTextureContentBounds;
+  printTexture: PrintTextureStyle;
+  printModeId: PrintModeId | null;
   shapePresetId: string;
   patternPresetId: string;
   gradientPresetId: string;
@@ -64,12 +100,19 @@ export type DesignLayerRequest = {
   solidColor: string;
   strokeColor: string;
   strokeWidth: number;
+  shadowColor: string;
+  shadowOpacity: number;
+  shadowBlur: number;
+  shadowOffsetX: number;
+  shadowOffsetY: number;
   textureDataUrl: string;
   textureFileName: string;
   textureWidth: number;
   textureHeight: number;
   textureAutoCenter: boolean;
   textureContentBounds: DesignTextureContentBounds;
+  printTexture: PrintTextureStyle;
+  printModeId: PrintModeId | null;
   shapePreset: DesignShapePreset;
   patternPreset: DesignPatternPreset;
   gradientPreset: DesignGradientPreset;
@@ -79,6 +122,9 @@ export type DesignLayerRequest = {
 type ShapeDefinition = Omit<DesignShapePreset, "previewSrc">;
 type PatternDefinition = Omit<DesignPatternPreset, "previewSrc">;
 type GradientDefinition = Omit<DesignGradientPreset, "previewSrc">;
+type StyleDefinition = Omit<DesignStylePreset, "previewSrc"> & {
+  previewShapeId: string;
+};
 type GradientStop = {
   offset: string;
   color: string;
@@ -116,6 +162,14 @@ export const DEFAULT_DESIGN_PATTERN_CONTROLS: DesignPatternControls = {
   mirrorRepeat: false,
 };
 
+export const DEFAULT_DESIGN_SHADOW_STYLE = {
+  color: "#0f1720",
+  opacity: 0.22,
+  blur: 3.4,
+  offsetX: 0,
+  offsetY: 2.4,
+} as const;
+
 export const DEFAULT_DESIGN_TEXTURE_CONTENT_BOUNDS: DesignTextureContentBounds = {
   left: 0,
   top: 0,
@@ -128,12 +182,19 @@ export const getDefaultDesignLayerStyle = (solidColor = "#ffb347"): DesignLayerS
   solidColor: normalizeHex(solidColor),
   strokeColor: "#ffffff",
   strokeWidth: 0,
+  shadowColor: DEFAULT_DESIGN_SHADOW_STYLE.color,
+  shadowOpacity: DEFAULT_DESIGN_SHADOW_STYLE.opacity,
+  shadowBlur: DEFAULT_DESIGN_SHADOW_STYLE.blur,
+  shadowOffsetX: DEFAULT_DESIGN_SHADOW_STYLE.offsetX,
+  shadowOffsetY: DEFAULT_DESIGN_SHADOW_STYLE.offsetY,
   textureDataUrl: "",
   textureFileName: "",
   textureWidth: 1024,
   textureHeight: 1024,
   textureAutoCenter: false,
   textureContentBounds: { ...DEFAULT_DESIGN_TEXTURE_CONTENT_BOUNDS },
+  printTexture: { ...DEFAULT_PRINT_TEXTURE_STYLE },
+  printModeId: null,
   shapePresetId: DESIGN_SHAPE_PRESETS[0]?.id || "badge",
   patternPresetId: DESIGN_PATTERN_PRESETS[0]?.id || "checker",
   gradientPresetId: DESIGN_GRADIENT_PRESETS[0]?.id || "sunset",
@@ -264,6 +325,18 @@ const sanitizeTextureDataUrl = (value: unknown) => (typeof value === "string" ? 
 const sanitizeTextureDimension = (value: unknown, fallback: number) =>
   clampNumber(safeNumber(typeof value === "number" ? value : NaN, fallback), 1, 8192);
 
+const sanitizeShadowColor = (value: unknown, fallback: string) =>
+  normalizeHex(typeof value === "string" ? value : fallback);
+
+const sanitizeShadowOpacity = (value: unknown, fallback: number) =>
+  clampNumber(safeNumber(typeof value === "number" ? value : NaN, fallback), 0, 1);
+
+const sanitizeShadowBlur = (value: unknown, fallback: number) =>
+  clampNumber(safeNumber(typeof value === "number" ? value : NaN, fallback), 0, 20);
+
+const sanitizeShadowOffset = (value: unknown, fallback: number) =>
+  clampNumber(safeNumber(typeof value === "number" ? value : NaN, fallback), -20, 20);
+
 const serializeTextureDataUrl = (value: string) => (value ? `${value.length}:${value.slice(0, 96)}` : "");
 
 const sanitizeTextureContentBounds = (value: unknown): DesignTextureContentBounds => {
@@ -303,12 +376,19 @@ export const createDesignLayerStyleFromRequest = (request: DesignLayerRequest): 
   solidColor: normalizeHex(request.solidColor),
   strokeColor: normalizeHex(request.strokeColor),
   strokeWidth: clampNumber(safeNumber(request.strokeWidth, 0), 0, 20),
+  shadowColor: sanitizeShadowColor(request.shadowColor, DEFAULT_DESIGN_SHADOW_STYLE.color),
+  shadowOpacity: sanitizeShadowOpacity(request.shadowOpacity, DEFAULT_DESIGN_SHADOW_STYLE.opacity),
+  shadowBlur: sanitizeShadowBlur(request.shadowBlur, DEFAULT_DESIGN_SHADOW_STYLE.blur),
+  shadowOffsetX: sanitizeShadowOffset(request.shadowOffsetX, DEFAULT_DESIGN_SHADOW_STYLE.offsetX),
+  shadowOffsetY: sanitizeShadowOffset(request.shadowOffsetY, DEFAULT_DESIGN_SHADOW_STYLE.offsetY),
   textureDataUrl: sanitizeTextureDataUrl(request.textureDataUrl),
   textureFileName: typeof request.textureFileName === "string" ? request.textureFileName.trim() : "",
   textureWidth: sanitizeTextureDimension(request.textureWidth, 1024),
   textureHeight: sanitizeTextureDimension(request.textureHeight, 1024),
   textureAutoCenter: Boolean(request.textureAutoCenter),
   textureContentBounds: sanitizeTextureContentBounds(request.textureContentBounds),
+  printTexture: sanitizePrintTextureStyle(request.printTexture),
+  printModeId: sanitizePrintModeId(request.printModeId),
   shapePresetId: request.shapePreset.id,
   patternPresetId: request.patternPreset.id,
   gradientPresetId: request.gradientPreset.id,
@@ -346,12 +426,19 @@ export const sanitizeDesignLayerStyle = (value: unknown): DesignLayerStyle | nul
       0,
       20
     ),
+    shadowColor: sanitizeShadowColor(value.shadowColor, DEFAULT_DESIGN_SHADOW_STYLE.color),
+    shadowOpacity: sanitizeShadowOpacity(value.shadowOpacity, DEFAULT_DESIGN_SHADOW_STYLE.opacity),
+    shadowBlur: sanitizeShadowBlur(value.shadowBlur, DEFAULT_DESIGN_SHADOW_STYLE.blur),
+    shadowOffsetX: sanitizeShadowOffset(value.shadowOffsetX, DEFAULT_DESIGN_SHADOW_STYLE.offsetX),
+    shadowOffsetY: sanitizeShadowOffset(value.shadowOffsetY, DEFAULT_DESIGN_SHADOW_STYLE.offsetY),
     textureDataUrl: sanitizeTextureDataUrl(value.textureDataUrl),
     textureFileName: typeof value.textureFileName === "string" ? value.textureFileName.trim() : "",
     textureWidth: sanitizeTextureDimension(value.textureWidth, 1024),
     textureHeight: sanitizeTextureDimension(value.textureHeight, 1024),
     textureAutoCenter: Boolean(value.textureAutoCenter),
     textureContentBounds: sanitizeTextureContentBounds(value.textureContentBounds),
+    printTexture: sanitizePrintTextureStyle(value.printTexture),
+    printModeId: sanitizePrintModeId(value.printModeId),
     shapePresetId,
     patternPresetId,
     gradientPresetId,
@@ -366,12 +453,19 @@ export const serializeDesignLayerStyle = (style: DesignLayerStyle | null | undef
         solidColor: normalizeHex(style.solidColor),
         strokeColor: normalizeHex(style.strokeColor || "#ffffff"),
         strokeWidth: clampNumber(safeNumber(style.strokeWidth, 0), 0, 20),
+        shadowColor: sanitizeShadowColor(style.shadowColor, DEFAULT_DESIGN_SHADOW_STYLE.color),
+        shadowOpacity: sanitizeShadowOpacity(style.shadowOpacity, DEFAULT_DESIGN_SHADOW_STYLE.opacity),
+        shadowBlur: sanitizeShadowBlur(style.shadowBlur, DEFAULT_DESIGN_SHADOW_STYLE.blur),
+        shadowOffsetX: sanitizeShadowOffset(style.shadowOffsetX, DEFAULT_DESIGN_SHADOW_STYLE.offsetX),
+        shadowOffsetY: sanitizeShadowOffset(style.shadowOffsetY, DEFAULT_DESIGN_SHADOW_STYLE.offsetY),
         textureDataUrl: serializeTextureDataUrl(style.textureDataUrl || ""),
         textureFileName: style.textureFileName || "",
         textureWidth: sanitizeTextureDimension(style.textureWidth, 1024),
         textureHeight: sanitizeTextureDimension(style.textureHeight, 1024),
         textureAutoCenter: Boolean(style.textureAutoCenter),
         textureContentBounds: sanitizeTextureContentBounds(style.textureContentBounds),
+        printTexture: serializePrintTextureStyle(style.printTexture),
+        printModeId: sanitizePrintModeId(style.printModeId),
         shapePresetId: style.shapePresetId,
         patternPresetId: style.patternPresetId,
         gradientPresetId: style.gradientPresetId,
@@ -386,12 +480,19 @@ export const resolveDesignLayerRequest = (style: DesignLayerStyle): DesignLayerR
     solidColor: normalizedStyle.solidColor,
     strokeColor: normalizedStyle.strokeColor,
     strokeWidth: normalizedStyle.strokeWidth,
+    shadowColor: normalizedStyle.shadowColor,
+    shadowOpacity: normalizedStyle.shadowOpacity,
+    shadowBlur: normalizedStyle.shadowBlur,
+    shadowOffsetX: normalizedStyle.shadowOffsetX,
+    shadowOffsetY: normalizedStyle.shadowOffsetY,
     textureDataUrl: normalizedStyle.textureDataUrl,
     textureFileName: normalizedStyle.textureFileName,
     textureWidth: normalizedStyle.textureWidth,
     textureHeight: normalizedStyle.textureHeight,
     textureAutoCenter: normalizedStyle.textureAutoCenter,
     textureContentBounds: normalizedStyle.textureContentBounds,
+    printTexture: normalizedStyle.printTexture,
+    printModeId: normalizedStyle.printModeId,
     shapePreset:
       DESIGN_SHAPE_PRESETS.find((preset) => preset.id === normalizedStyle.shapePresetId) || DESIGN_SHAPE_PRESETS[0]!,
     patternPreset:
@@ -653,10 +754,27 @@ const createShapeTextureSvg = (
   options?: {
     strokeColor?: string;
     strokeWidth?: number;
+    shadowColor?: string;
+    shadowOpacity?: number;
+    shadowBlur?: number;
+    shadowOffsetX?: number;
+    shadowOffsetY?: number;
+    printTexture?: PrintTextureStyle;
   }
 ) => {
   const outlineWidth = clampNumber(safeNumber(options?.strokeWidth ?? 0, 0), 0, 20);
   const outlineColor = normalizeHex(options?.strokeColor || "#ffffff");
+  const shadowColor = sanitizeShadowColor(options?.shadowColor, DEFAULT_DESIGN_SHADOW_STYLE.color);
+  const shadowOpacity = sanitizeShadowOpacity(options?.shadowOpacity, DEFAULT_DESIGN_SHADOW_STYLE.opacity);
+  const shadowBlur = sanitizeShadowBlur(options?.shadowBlur, DEFAULT_DESIGN_SHADOW_STYLE.blur);
+  const shadowOffsetX = sanitizeShadowOffset(options?.shadowOffsetX, DEFAULT_DESIGN_SHADOW_STYLE.offsetX);
+  const shadowOffsetY = sanitizeShadowOffset(options?.shadowOffsetY, DEFAULT_DESIGN_SHADOW_STYLE.offsetY);
+  const printTexture = sanitizePrintTextureStyle(options?.printTexture);
+  const printTextureStrengths = resolvePrintTextureStrengths(printTexture);
+  const hasShadow =
+    shadowOpacity > 0.001 &&
+    (shadowBlur > 0.001 || Math.abs(shadowOffsetX) > 0.001 || Math.abs(shadowOffsetY) > 0.001);
+  const hasPrintTexture = !isPrintTextureDisabled(printTexture);
   const outlineDefs =
     outlineWidth > 0.001
       ? `
@@ -671,24 +789,138 @@ const createShapeTextureSvg = (
           </feMerge>
         </filter>
       `
-      : "";
+    : "";
+  const printTextureDefs = hasPrintTexture
+    ? `
+        <filter id="shape-print-texture" x="-35%" y="-35%" width="170%" height="170%" color-interpolation-filters="sRGB">
+          <feTurbulence
+            type="fractalNoise"
+            baseFrequency="${formatSvgNumber(0.05 + printTextureStrengths.fabricNoise * 0.08)}"
+            numOctaves="3"
+            seed="23"
+            result="fabric-noise"
+          />
+          <feTurbulence
+            type="fractalNoise"
+            baseFrequency="${formatSvgNumber(0.75 + printTextureStrengths.grain * 0.55)}"
+            numOctaves="2"
+            seed="13"
+            result="grain-noise"
+          />
+          <feTurbulence
+            type="fractalNoise"
+            baseFrequency="${formatSvgNumber(0.14 + printTextureStrengths.distress * 0.14)}"
+            numOctaves="2"
+            seed="37"
+            result="distress-noise"
+          />
+          <feDisplacementMap
+            in="SourceGraphic"
+            in2="fabric-noise"
+            scale="${formatSvgNumber(printTextureStrengths.fabricNoise * 3.2 + printTextureStrengths.distress * 1.4)}"
+            xChannelSelector="R"
+            yChannelSelector="B"
+            result="print-base"
+          />
+          <feColorMatrix
+            in="distress-noise"
+            type="matrix"
+            values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.2126 0.7152 0.0722 0 0"
+            result="distress-mono"
+          />
+          <feComponentTransfer in="distress-mono" result="distress-alpha">
+            <feFuncA
+              type="linear"
+              slope="${formatSvgNumber(printTextureStrengths.distress * 0.92)}"
+              intercept="${formatSvgNumber(1 - printTextureStrengths.distress * 0.92)}"
+            />
+          </feComponentTransfer>
+          <feComposite in="print-base" in2="distress-alpha" operator="in" result="distressed" />
+          <feColorMatrix
+            in="grain-noise"
+            type="matrix"
+            values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.2126 0.7152 0.0722 0 0"
+            result="grain-mono"
+          />
+          <feComponentTransfer in="grain-mono" result="grain-alpha">
+            <feFuncA type="linear" slope="${formatSvgNumber(0.55 + printTextureStrengths.grain * 0.45)}" />
+          </feComponentTransfer>
+          <feFlood
+            flood-color="#000000"
+            flood-opacity="${formatSvgNumber(0.035 + printTextureStrengths.grain * 0.12)}"
+            result="grain-dark-color"
+          />
+          <feComposite in="grain-dark-color" in2="grain-alpha" operator="in" result="grain-dark" />
+          <feComposite in="grain-dark" in2="distressed" operator="in" result="grain-dark-clipped" />
+          <feBlend in="distressed" in2="grain-dark-clipped" mode="multiply" result="with-grain-dark" />
+          <feFlood
+            flood-color="#ffffff"
+            flood-opacity="${formatSvgNumber(printTextureStrengths.grain * 0.05 + printTextureStrengths.fabricNoise * 0.03)}"
+            result="grain-light-color"
+          />
+          <feComposite in="grain-light-color" in2="grain-alpha" operator="in" result="grain-light" />
+          <feComposite in="grain-light" in2="distressed" operator="in" result="grain-light-clipped" />
+          <feBlend in="with-grain-dark" in2="grain-light-clipped" mode="screen" result="with-grain" />
+          <feColorMatrix
+            in="fabric-noise"
+            type="matrix"
+            values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.2126 0.7152 0.0722 0 0"
+            result="fabric-mono"
+          />
+          <feComponentTransfer in="fabric-mono" result="fabric-alpha">
+            <feFuncA type="linear" slope="${formatSvgNumber(0.3 + printTextureStrengths.fabricNoise * 0.5)}" />
+          </feComponentTransfer>
+          <feFlood
+            flood-color="#000000"
+            flood-opacity="${formatSvgNumber(printTextureStrengths.fabricNoise * 0.08)}"
+            result="fabric-dark-color"
+          />
+          <feComposite in="fabric-dark-color" in2="fabric-alpha" operator="in" result="fabric-dark" />
+          <feComposite in="fabric-dark" in2="distressed" operator="in" result="fabric-dark-clipped" />
+          <feBlend in="with-grain" in2="fabric-dark-clipped" mode="multiply" result="textured" />
+          <feFlood
+            flood-color="#ffffff"
+            flood-opacity="${formatSvgNumber(printTextureStrengths.fade * 0.16)}"
+            result="fade-white"
+          />
+          <feBlend in="textured" in2="fade-white" mode="screen" result="lightened" />
+          <feComponentTransfer in="lightened" result="print-finished">
+            <feFuncA type="linear" slope="${formatSvgNumber(1 - printTextureStrengths.fade * 0.42)}" />
+          </feComponentTransfer>
+        </filter>
+      `
+    : "";
   const renderedBody = shapePreset.renderBody(fill, stroke);
-  const body =
+  const outlinedBody =
     outlineWidth > 0.001 ? `<g filter="url(#shape-outline)">${renderedBody}</g>` : renderedBody;
+  const body = hasPrintTexture
+    ? `<g filter="url(#shape-print-texture)">${outlinedBody}</g>`
+    : outlinedBody;
+  const shadowDefs = hasShadow
+    ? `
+        <filter id="shape-shadow" x="-60%" y="-60%" width="220%" height="220%">
+          <feDropShadow
+            dx="${formatSvgNumber(shadowOffsetX)}"
+            dy="${formatSvgNumber(shadowOffsetY)}"
+            stdDeviation="${formatSvgNumber(shadowBlur)}"
+            flood-color="${shadowColor}"
+            flood-opacity="${formatSvgNumber(shadowOpacity)}"
+          />
+        </filter>
+      `
+    : "";
+  const renderedWithShadow = hasShadow ? `<g filter="url(#shape-shadow)">${body}</g>` : body;
 
   return svgDataUrl(`
     <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 100 100">
       <defs>
         ${defs}
-        <filter id="shape-shadow" x="-30%" y="-30%" width="160%" height="160%">
-          <feDropShadow dx="0" dy="2.4" stdDeviation="3.4" flood-color="rgba(15, 23, 32, 0.22)" />
-        </filter>
+        ${shadowDefs}
         ${outlineDefs}
+        ${printTextureDefs}
       </defs>
       <rect width="100" height="100" fill="transparent" />
-      <g filter="url(#shape-shadow)">
-        ${body}
-      </g>
+      ${renderedWithShadow}
     </svg>
   `);
 };
@@ -1280,6 +1512,121 @@ const patternDefinitions: PatternDefinition[] = [
       </pattern>
     `,
   },
+  {
+    id: "memphis",
+    name: "Memphis",
+    fileStem: "memphis",
+    renderDefinition: (fillId) => `
+      <pattern id="${fillId}" width="44" height="44" patternUnits="userSpaceOnUse">
+        <rect width="44" height="44" fill="#fdf4ff" />
+        <circle cx="10" cy="10" r="5" fill="#f43f5e" />
+        <path d="M24 8 H38" stroke="#2563eb" stroke-width="3.6" stroke-linecap="round" />
+        <path d="M30 18 L38 26 L30 34 L22 26 Z" fill="#facc15" />
+        <path d="M4 28 C8 20 16 20 20 28 C24 36 32 36 36 28" stroke="#111827" stroke-width="2.2" fill="none" stroke-linecap="round" />
+        <circle cx="12" cy="34" r="2.4" fill="#22c55e" />
+      </pattern>
+    `,
+  },
+  {
+    id: "marble",
+    name: "Marble",
+    fileStem: "marble",
+    renderDefinition: (fillId) => `
+      <pattern id="${fillId}" width="56" height="56" patternUnits="userSpaceOnUse">
+        <rect width="56" height="56" fill="#f9fafb" />
+        <path d="M4 10 C16 4 28 8 38 4 C48 0 54 4 52 12 C48 22 32 18 24 24 C14 32 10 38 2 40" stroke="rgba(15,23,32,0.18)" stroke-width="1.8" fill="none" stroke-linecap="round" />
+        <path d="M10 50 C20 40 30 42 40 34 C48 28 52 18 56 10" stroke="rgba(15,23,32,0.16)" stroke-width="1.5" fill="none" stroke-linecap="round" />
+        <path d="M0 24 C10 18 18 20 28 14 C40 8 48 10 56 2" stroke="rgba(148,163,184,0.34)" stroke-width="1.2" fill="none" stroke-linecap="round" />
+      </pattern>
+    `,
+  },
+  {
+    id: "racing-check",
+    name: "Racing Check",
+    fileStem: "racing-check",
+    renderDefinition: (fillId) => `
+      <pattern id="${fillId}" width="28" height="28" patternUnits="userSpaceOnUse">
+        <rect width="28" height="28" fill="#f8fafc" />
+        <rect width="14" height="14" fill="#111827" />
+        <rect x="14" y="14" width="14" height="14" fill="#111827" />
+        <rect x="20" width="4" height="28" fill="#ef4444" opacity="0.82" />
+        <rect y="20" width="28" height="4" fill="#ef4444" opacity="0.82" />
+      </pattern>
+    `,
+  },
+  {
+    id: "wave-lines",
+    name: "Wave Lines",
+    fileStem: "wave-lines",
+    renderDefinition: (fillId) => `
+      <pattern id="${fillId}" width="34" height="26" patternUnits="userSpaceOnUse">
+        <rect width="34" height="26" fill="#eef6ff" />
+        <path d="M0 6 Q8 0 17 6 T34 6" stroke="#0ea5e9" stroke-width="2.2" fill="none" stroke-linecap="round" />
+        <path d="M0 13 Q8 7 17 13 T34 13" stroke="#0284c7" stroke-width="2.2" fill="none" stroke-linecap="round" />
+        <path d="M0 20 Q8 14 17 20 T34 20" stroke="#38bdf8" stroke-width="2.2" fill="none" stroke-linecap="round" />
+      </pattern>
+    `,
+  },
+  {
+    id: "snake-skin",
+    name: "Snake Skin",
+    fileStem: "snake-skin",
+    renderDefinition: (fillId) => `
+      <pattern id="${fillId}" width="42" height="42" patternUnits="userSpaceOnUse">
+        <rect width="42" height="42" fill="#d8ccb4" />
+        <path d="M10 2 L22 8 L22 20 L10 26 L-2 20 L-2 8 Z" fill="#8b7355" opacity="0.86" />
+        <path d="M32 2 L44 8 L44 20 L32 26 L20 20 L20 8 Z" fill="#6f5a44" opacity="0.88" />
+        <path d="M10 20 L22 26 L22 38 L10 44 L-2 38 L-2 26 Z" fill="#6f5a44" opacity="0.88" />
+        <path d="M32 20 L44 26 L44 38 L32 44 L20 38 L20 26 Z" fill="#8b7355" opacity="0.86" />
+        <path d="M10 2 L22 8 L22 20 L10 26 L-2 20 L-2 8 Z M32 2 L44 8 L44 20 L32 26 L20 20 L20 8 Z M10 20 L22 26 L22 38 L10 44 L-2 38 L-2 26 Z M32 20 L44 26 L44 38 L32 44 L20 38 L20 26 Z" fill="none" stroke="rgba(255,255,255,0.28)" stroke-width="1.1" />
+      </pattern>
+    `,
+  },
+  {
+    id: "paper-cut",
+    name: "Paper Cut",
+    fileStem: "paper-cut",
+    renderDefinition: (fillId) => `
+      <pattern id="${fillId}" width="52" height="52" patternUnits="userSpaceOnUse">
+        <rect width="52" height="52" fill="#f8fafc" />
+        <path d="M6 10 C14 0 30 0 40 10 C46 16 46 28 38 36 C30 44 16 46 8 38 C0 30 0 18 6 10 Z" fill="#cbd5e1" />
+        <path d="M14 14 C20 8 30 8 36 14 C40 18 40 26 34 32 C28 38 18 38 12 32 C8 28 8 18 14 14 Z" fill="#e2e8f0" />
+        <path d="M18 18 C24 14 30 14 34 18 C36 20 36 26 32 30 C28 34 22 34 18 30 C14 26 14 22 18 18 Z" fill="#ffffff" />
+      </pattern>
+    `,
+  },
+  {
+    id: "pixel-rain",
+    name: "Pixel Rain",
+    fileStem: "pixel-rain",
+    renderDefinition: (fillId) => `
+      <pattern id="${fillId}" width="34" height="42" patternUnits="userSpaceOnUse">
+        <rect width="34" height="42" fill="#020617" />
+        <rect x="4" width="3" height="18" fill="#4ade80" />
+        <rect x="10" y="8" width="2" height="22" fill="#22c55e" />
+        <rect x="16" y="2" width="3" height="26" fill="#86efac" />
+        <rect x="22" y="12" width="2" height="18" fill="#16a34a" />
+        <rect x="28" y="4" width="3" height="24" fill="#bbf7d0" />
+        <rect x="6" y="22" width="2" height="12" fill="#15803d" />
+        <rect x="18" y="30" width="2" height="10" fill="#4ade80" />
+      </pattern>
+    `,
+  },
+  {
+    id: "sticker-doodles",
+    name: "Sticker Doodles",
+    fileStem: "sticker-doodles",
+    renderDefinition: (fillId) => `
+      <pattern id="${fillId}" width="42" height="42" patternUnits="userSpaceOnUse">
+        <rect width="42" height="42" fill="#fffef7" />
+        <path d="M6 12 C8 6 16 6 18 12 C16 16 8 16 6 12 Z" fill="#fb7185" />
+        <path d="M24 8 H34 V18 H24 Z" fill="#60a5fa" transform="rotate(12 29 13)" />
+        <path d="M12 28 L18 22 L24 28 L18 34 Z" fill="#facc15" />
+        <path d="M28 24 C28 20 32 18 35 21 C38 18 42 20 42 24 C42 28 38 31 35 34 C32 31 28 28 28 24 Z" fill="#4ade80" />
+        <path d="M2 36 H16 M20 36 H30" stroke="#111827" stroke-width="2" stroke-linecap="round" />
+      </pattern>
+    `,
+  },
 
 ];
 
@@ -1630,6 +1977,96 @@ const gradientDefinitions: GradientDefinition[] = [
       { offset: "34%", color: "#fda4af" },
       { offset: "68%", color: "#fb7185" },
       { offset: "100%", color: "#9f1239" },
+    ],
+  }),
+  createLinearGradientDefinition({
+    id: "royal-velvet",
+    name: "Royal Velvet",
+    fileStem: "royal-velvet",
+    x1: "6%",
+    y1: "0%",
+    x2: "94%",
+    y2: "100%",
+    stops: [
+      { offset: "0%", color: "#f5ecff" },
+      { offset: "30%", color: "#8b5cf6" },
+      { offset: "68%", color: "#4c1d95" },
+      { offset: "100%", color: "#12071f" },
+    ],
+  }),
+  createLinearGradientDefinition({
+    id: "midnight-neon",
+    name: "Midnight Neon",
+    fileStem: "midnight-neon",
+    x1: "0%",
+    y1: "0%",
+    x2: "100%",
+    y2: "100%",
+    stops: [
+      { offset: "0%", color: "#020617" },
+      { offset: "26%", color: "#0f172a" },
+      { offset: "62%", color: "#06b6d4" },
+      { offset: "100%", color: "#67e8f9" },
+    ],
+  }),
+  createLinearGradientDefinition({
+    id: "ruby-glow",
+    name: "Ruby Glow",
+    fileStem: "ruby-glow",
+    x1: "10%",
+    y1: "0%",
+    x2: "90%",
+    y2: "100%",
+    stops: [
+      { offset: "0%", color: "#fff1f2" },
+      { offset: "28%", color: "#fb7185" },
+      { offset: "62%", color: "#e11d48" },
+      { offset: "100%", color: "#4c0519" },
+    ],
+  }),
+  createLinearGradientDefinition({
+    id: "champagne",
+    name: "Champagne",
+    fileStem: "champagne",
+    x1: "8%",
+    y1: "0%",
+    x2: "92%",
+    y2: "100%",
+    stops: [
+      { offset: "0%", color: "#fffdf2" },
+      { offset: "32%", color: "#f8e7b5" },
+      { offset: "66%", color: "#e2c97a" },
+      { offset: "100%", color: "#7c6240" },
+    ],
+  }),
+  createLinearGradientDefinition({
+    id: "obsidian",
+    name: "Obsidian",
+    fileStem: "obsidian",
+    x1: "0%",
+    y1: "8%",
+    x2: "100%",
+    y2: "92%",
+    stops: [
+      { offset: "0%", color: "#f8fafc" },
+      { offset: "18%", color: "#9ca3af" },
+      { offset: "48%", color: "#111827" },
+      { offset: "100%", color: "#020617" },
+    ],
+  }),
+  createLinearGradientDefinition({
+    id: "desert-sun",
+    name: "Desert Sun",
+    fileStem: "desert-sun",
+    x1: "6%",
+    y1: "0%",
+    x2: "94%",
+    y2: "100%",
+    stops: [
+      { offset: "0%", color: "#fff7cc" },
+      { offset: "30%", color: "#fbbf24" },
+      { offset: "66%", color: "#f97316" },
+      { offset: "100%", color: "#7c2d12" },
     ],
   }),
 ];
@@ -2121,7 +2558,954 @@ const shapeDefinitions: ShapeDefinition[] = [
       <path d="M18 30 L44 50 L18 70 L30 82 L70 50 L30 18 Z M44 18 L84 50 L44 82 L56 70 L72 58 L84 50 L72 42 L56 30 Z" fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round" />
     `,
   },
+  {
+    id: "rosette",
+    name: "Rosette",
+    fileStem: "rosette",
+    defaultScale: 0.37,
+    renderBody: (fill, stroke) => `
+      <path d="M50 14 C56 20 64 18 68 22 C72 26 80 26 82 32 C84 38 90 44 88 50 C90 56 84 62 82 68 C80 74 72 74 68 78 C64 82 56 80 50 86 C44 80 36 82 32 78 C28 74 20 74 18 68 C16 62 10 56 12 50 C10 44 16 38 18 32 C20 26 28 26 32 22 C36 18 44 20 50 14 Z" fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round" />
+    `,
+  },
+  {
+    id: "seal-12",
+    name: "Seal",
+    fileStem: "seal-12",
+    defaultScale: 0.37,
+    renderBody: (fill, stroke) => `
+      <polygon points="50,10 58,18 70,14 74,26 86,26 82,38 90,50 82,62 86,74 74,74 70,86 58,82 50,90 42,82 30,86 26,74 14,74 18,62 10,50 18,38 14,26 26,26 30,14 42,18" fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round" />
+    `,
+  },
+  {
+    id: "pennant",
+    name: "Pennant",
+    fileStem: "pennant",
+    defaultScale: 0.38,
+    renderBody: (fill, stroke) => `
+      <path d="M20 18 H78 V46 L54 34 L78 22 V82 H20 Z" fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round" />
+    `,
+  },
+  {
+    id: "ribbon-tail",
+    name: "Ribbon Tail",
+    fileStem: "ribbon-tail",
+    defaultScale: 0.38,
+    renderBody: (fill, stroke) => `
+      <path d="M20 18 H80 V56 H62 L56 82 L44 68 L32 82 L38 56 H20 Z" fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round" />
+    `,
+  },
+  {
+    id: "arch",
+    name: "Arch",
+    fileStem: "arch",
+    defaultScale: 0.36,
+    renderBody: (fill, stroke) => `
+      <path d="M20 82 V40 C20 24 33 14 50 14 C67 14 80 24 80 40 V82 Z" fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round" />
+    `,
+  },
+  {
+    id: "trapezoid",
+    name: "Trapezoid",
+    fileStem: "trapezoid",
+    defaultScale: 0.36,
+    renderBody: (fill, stroke) => `
+      <polygon points="26,18 74,18 86,82 14,82" fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round" />
+    `,
+  },
+  {
+    id: "parallelogram",
+    name: "Parallelogram",
+    fileStem: "parallelogram",
+    defaultScale: 0.36,
+    renderBody: (fill, stroke) => `
+      <polygon points="28,18 84,18 72,82 16,82" fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round" />
+    `,
+  },
+  {
+    id: "folder-tab",
+    name: "Folder Tab",
+    fileStem: "folder-tab",
+    defaultScale: 0.38,
+    renderBody: (fill, stroke) => `
+      <path d="M16 30 H40 L48 20 H84 V78 H16 Z" fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round" />
+    `,
+  },
+  {
+    id: "ticket-notch",
+    name: "Ticket Notch",
+    fileStem: "ticket-notch",
+    defaultScale: 0.39,
+    renderBody: (fill, stroke) => `
+      <path fill-rule="evenodd" d="M18 24 H82 V38 A7 7 0 0 0 82 62 V76 H18 V62 A7 7 0 0 0 18 38 Z M18 50 A5 5 0 0 1 18 50 Z M82 50 A5 5 0 0 1 82 50 Z" fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-dasharray="5 4" />
+    `,
+  },
+  {
+    id: "scroll-banner",
+    name: "Scroll Banner",
+    fileStem: "scroll-banner",
+    defaultScale: 0.39,
+    renderBody: (fill, stroke) => `
+      <path d="M18 30 H82 V66 H60 L50 78 L40 66 H18 Z M18 30 L10 38 L18 46 M82 30 L90 38 L82 46" fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round" />
+    `,
+  },
+  {
+    id: "star-8",
+    name: "Star 8",
+    fileStem: "star-8",
+    defaultScale: 0.36,
+    renderBody: (fill, stroke) => `
+      <polygon points="50,10 58,30 78,22 70,42 90,50 70,58 78,78 58,70 50,90 42,70 22,78 30,58 10,50 30,42 22,22 42,30" fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round" />
+    `,
+  },
+  {
+    id: "star-12",
+    name: "Star 12",
+    fileStem: "star-12",
+    defaultScale: 0.36,
+    renderBody: (fill, stroke) => `
+      <polygon points="50,8 56,24 70,14 68,30 84,26 76,40 92,44 78,54 92,66 76,70 84,84 68,80 70,96 56,86 50,92 44,86 30,96 32,80 16,84 24,70 8,66 22,54 8,44 24,40 16,26 32,30 30,14 44,24" fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round" />
+    `,
+  },
+  {
+    id: "shield-point",
+    name: "Shield Point",
+    fileStem: "shield-point",
+    defaultScale: 0.37,
+    renderBody: (fill, stroke) => `
+      <path d="M50 12 L82 24 V42 C82 62 68 76 50 90 C32 76 18 62 18 42 V24 Z" fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round" />
+    `,
+  },
+  {
+    id: "capsule-vertical",
+    name: "Capsule Vertical",
+    fileStem: "capsule-vertical",
+    defaultScale: 0.36,
+    renderBody: (fill, stroke) => `
+      <rect x="30" y="14" width="40" height="72" rx="20" fill="${fill}" stroke="${stroke}" stroke-width="2.6" />
+    `,
+  },
+  {
+    id: "notched-rect",
+    name: "Notched Rect",
+    fileStem: "notched-rect",
+    defaultScale: 0.38,
+    renderBody: (fill, stroke) => `
+      <path d="M18 22 H82 V38 L72 50 L82 62 V78 H18 V62 L28 50 L18 38 Z" fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round" />
+    `,
+  },
+  {
+    id: "home-plate",
+    name: "Home Plate",
+    fileStem: "home-plate",
+    defaultScale: 0.37,
+    renderBody: (fill, stroke) => `
+      <path d="M24 22 H76 L86 54 L50 86 L14 54 Z" fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round" />
+    `,
+  },
+  {
+    id: "kite",
+    name: "Kite",
+    fileStem: "kite",
+    defaultScale: 0.36,
+    renderBody: (fill, stroke) => `
+      <polygon points="50,10 82,44 58,90 18,52" fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round" />
+    `,
+  },
+  {
+    id: "gem-cut",
+    name: "Gem Cut",
+    fileStem: "gem-cut",
+    defaultScale: 0.37,
+    renderBody: (fill, stroke) => `
+      <path d="M28 18 H72 L86 34 L74 78 H26 L14 34 Z" fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round" />
+    `,
+  },
+  {
+    id: "arc-ribbon",
+    name: "Arc Ribbon",
+    fileStem: "arc-ribbon",
+    defaultScale: 0.39,
+    renderBody: (fill, stroke) => `
+      <path d="M16 34 C24 18 38 10 50 10 C62 10 76 18 84 34 V58 H66 L58 80 L50 64 L42 80 L34 58 H16 Z" fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round" />
+    `,
+  },
+  {
+    id: "label-notch",
+    name: "Label Notch",
+    fileStem: "label-notch",
+    defaultScale: 0.39,
+    renderBody: (fill, stroke) => `
+      <path d="M18 26 H82 V74 H18 L32 50 Z" fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round" />
+    `,
+  },
+  {
+    id: "diamond-cut",
+    name: "Diamond Cut",
+    fileStem: "diamond-cut",
+    defaultScale: 0.36,
+    renderBody: (fill, stroke) => `
+      <polygon points="50,10 74,28 86,50 74,72 50,90 26,72 14,50 26,28" fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round" />
+    `,
+  },
+  {
+    id: "burst-24",
+    name: "Burst 24",
+    fileStem: "burst-24",
+    defaultScale: 0.36,
+    renderBody: (fill, stroke) => `
+      <polygon points="50,8 56,20 68,12 68,26 82,18 76,32 92,30 82,42 96,50 82,58 92,70 76,68 82,82 68,74 68,88 56,80 50,92 44,80 32,88 32,74 18,82 24,68 8,70 18,58 4,50 18,42 8,30 24,32 18,18 32,26 32,12 44,20" fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round" />
+    `,
+  },
+  {
+    id: "shield-round",
+    name: "Shield Round",
+    fileStem: "shield-round",
+    defaultScale: 0.37,
+    renderBody: (fill, stroke) => `
+      <path d="M50 14 L78 24 V42 C78 62 66 76 50 88 C34 76 22 62 22 42 V24 Z" fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round" />
+    `,
+  },
+  {
+    id: "hex-point",
+    name: "Hex Point",
+    fileStem: "hex-point",
+    defaultScale: 0.36,
+    renderBody: (fill, stroke) => `
+      <polygon points="50,10 76,24 86,50 76,76 50,90 24,76 14,50 24,24" fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round" />
+    `,
+  },
+  {
+    id: "medallion-ribbon",
+    name: "Medallion Ribbon",
+    fileStem: "medallion-ribbon",
+    defaultScale: 0.38,
+    renderBody: (fill, stroke) => `
+      <path d="M36 20 H64 L70 34 L82 40 L76 54 L80 68 L66 70 L58 84 L50 74 L42 84 L34 70 L20 68 L24 54 L18 40 L30 34 Z" fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round" />
+    `,
+  },
+  {
+    id: "corner-ribbon",
+    name: "Corner Ribbon",
+    fileStem: "corner-ribbon",
+    defaultScale: 0.38,
+    renderBody: (fill, stroke) => `
+      <path d="M18 18 H82 V56 L62 50 L50 82 L36 52 L18 56 Z" fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round" />
+    `,
+  },
+  {
+    id: "double-tag",
+    name: "Double Tag",
+    fileStem: "double-tag",
+    defaultScale: 0.38,
+    renderBody: (fill, stroke) => `
+      <g fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round">
+        <path d="M22 28 H58 L76 46 L58 64 H22 Z" />
+        <path d="M42 18 H78 L90 30 V58 L72 76 H42 Z" opacity="0.92" />
+      </g>
+    `,
+  },
+  {
+    id: "wave-badge",
+    name: "Wave Badge",
+    fileStem: "wave-badge",
+    defaultScale: 0.39,
+    renderBody: (fill, stroke) => `
+      <path d="M18 32 C28 20 40 20 50 28 C60 36 72 36 82 24 V70 C72 82 60 82 50 74 C40 66 28 66 18 78 Z" fill="${fill}" stroke="${stroke}" stroke-width="2.6" stroke-linejoin="round" />
+    `,
+  },
 
+];
+
+const getPatternDefinitionById = (id: string) =>
+  patternDefinitions.find((preset) => preset.id === id) || patternDefinitions[0]!;
+
+const getGradientDefinitionById = (id: string) =>
+  gradientDefinitions.find((preset) => preset.id === id) || gradientDefinitions[0]!;
+
+const getShapeDefinitionById = (id: string) => shapeDefinitions.find((preset) => preset.id === id) || shapeDefinitions[0]!;
+
+const createStylePreviewSrc = (definition: StyleDefinition) => {
+  const shapePreset = getShapeDefinitionById(definition.previewShapeId);
+  const solidFill = createSolidFill(definition.solidColor);
+  let defs = solidFill.defs;
+  let fill = solidFill.fill;
+
+  if (definition.fillMode === "pattern") {
+    defs = renderPatternDefinitionWithControls(
+      getPatternDefinitionById(definition.patternPresetId),
+      "shape-fill",
+      definition.patternControls
+    );
+    fill = "url(#shape-fill)";
+  } else if (definition.fillMode === "gradient") {
+    defs = getGradientDefinitionById(definition.gradientPresetId).renderDefinition("shape-fill");
+    fill = "url(#shape-fill)";
+  }
+
+  return createShapeTextureSvg(shapePreset, defs, fill, solidFill.stroke, {
+    strokeColor: definition.strokeColor,
+    strokeWidth: definition.strokeWidth,
+    shadowColor: definition.shadowColor,
+    shadowOpacity: definition.shadowOpacity,
+    shadowBlur: definition.shadowBlur,
+    shadowOffsetX: definition.shadowOffsetX,
+    shadowOffsetY: definition.shadowOffsetY,
+  });
+};
+
+const styleDefinitions: StyleDefinition[] = [
+  {
+    id: "sport",
+    name: "Sport",
+    previewShapeId: "badge",
+    fillMode: "pattern",
+    solidColor: "#0f172a",
+    strokeColor: "#ffffff",
+    strokeWidth: 1.8,
+    shadowColor: "#0f172a",
+    shadowOpacity: 0.28,
+    shadowBlur: 2.6,
+    shadowOffsetX: 0,
+    shadowOffsetY: 2.2,
+    patternPresetId: "sport-stripe",
+    gradientPresetId: "sunset",
+    patternControls: {
+      scale: 1,
+      offsetX: 0,
+      offsetY: 0,
+      rotationDeg: -8,
+      repeatX: 1.3,
+      repeatY: 1.3,
+      mirrorRepeat: false,
+    },
+  },
+  {
+    id: "cyber",
+    name: "Cyber",
+    previewShapeId: "bolt",
+    fillMode: "pattern",
+    solidColor: "#06b6d4",
+    strokeColor: "#cffafe",
+    strokeWidth: 1.3,
+    shadowColor: "#22d3ee",
+    shadowOpacity: 0.36,
+    shadowBlur: 4.4,
+    shadowOffsetX: 0,
+    shadowOffsetY: 0,
+    patternPresetId: "cyber-grid",
+    gradientPresetId: "midnight-neon",
+    patternControls: {
+      scale: 0.9,
+      offsetX: 0,
+      offsetY: 0,
+      rotationDeg: 0,
+      repeatX: 1.8,
+      repeatY: 1.8,
+      mirrorRepeat: false,
+    },
+  },
+  {
+    id: "vintage",
+    name: "Vintage",
+    previewShapeId: "shield-alt",
+    fillMode: "gradient",
+    solidColor: "#8b5e3c",
+    strokeColor: "#f8e7c8",
+    strokeWidth: 1.6,
+    shadowColor: "#4a2d1f",
+    shadowOpacity: 0.18,
+    shadowBlur: 2.2,
+    shadowOffsetX: 0,
+    shadowOffsetY: 1.4,
+    patternPresetId: "topography",
+    gradientPresetId: "copper",
+    patternControls: {
+      scale: 1,
+      offsetX: 0,
+      offsetY: 0,
+      rotationDeg: 0,
+      repeatX: 1,
+      repeatY: 1,
+      mirrorRepeat: false,
+    },
+  },
+  {
+    id: "grunge",
+    name: "Grunge",
+    previewShapeId: "burst",
+    fillMode: "pattern",
+    solidColor: "#202020",
+    strokeColor: "#f5f5f4",
+    strokeWidth: 1.2,
+    shadowColor: "#111111",
+    shadowOpacity: 0.24,
+    shadowBlur: 2.8,
+    shadowOffsetX: 0.2,
+    shadowOffsetY: 2.4,
+    patternPresetId: "spray-paint",
+    gradientPresetId: "obsidian",
+    patternControls: {
+      scale: 0.95,
+      offsetX: 0,
+      offsetY: 0,
+      rotationDeg: 12,
+      repeatX: 1.4,
+      repeatY: 1.4,
+      mirrorRepeat: false,
+    },
+  },
+  {
+    id: "luxury",
+    name: "Luxury",
+    previewShapeId: "crown",
+    fillMode: "gradient",
+    solidColor: "#c2871d",
+    strokeColor: "#fff6cf",
+    strokeWidth: 1.5,
+    shadowColor: "#5b3b0c",
+    shadowOpacity: 0.22,
+    shadowBlur: 3,
+    shadowOffsetX: 0,
+    shadowOffsetY: 2,
+    patternPresetId: "honeycomb",
+    gradientPresetId: "gold",
+    patternControls: {
+      scale: 1,
+      offsetX: 0,
+      offsetY: 0,
+      rotationDeg: 0,
+      repeatX: 1,
+      repeatY: 1,
+      mirrorRepeat: false,
+    },
+  },
+  {
+    id: "neon",
+    name: "Neon",
+    previewShapeId: "star-8",
+    fillMode: "gradient",
+    solidColor: "#00d4ff",
+    strokeColor: "#e6ffff",
+    strokeWidth: 1.4,
+    shadowColor: "#00f5ff",
+    shadowOpacity: 0.42,
+    shadowBlur: 5.4,
+    shadowOffsetX: 0,
+    shadowOffsetY: 0,
+    patternPresetId: "cyber-grid",
+    gradientPresetId: "neon-pop",
+    patternControls: { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0, repeatX: 1, repeatY: 1, mirrorRepeat: false },
+  },
+  {
+    id: "racing",
+    name: "Racing",
+    previewShapeId: "ticket-notch",
+    fillMode: "pattern",
+    solidColor: "#111827",
+    strokeColor: "#ffffff",
+    strokeWidth: 1.7,
+    shadowColor: "#7f1d1d",
+    shadowOpacity: 0.16,
+    shadowBlur: 2.4,
+    shadowOffsetX: 0,
+    shadowOffsetY: 2,
+    patternPresetId: "racing-check",
+    gradientPresetId: "fire",
+    patternControls: { scale: 0.95, offsetX: 0, offsetY: 0, rotationDeg: 0, repeatX: 1.25, repeatY: 1.25, mirrorRepeat: false },
+  },
+  {
+    id: "sticker",
+    name: "Sticker",
+    previewShapeId: "badge",
+    fillMode: "solid",
+    solidColor: "#ef4444",
+    strokeColor: "#ffffff",
+    strokeWidth: 2.5,
+    shadowColor: "#111827",
+    shadowOpacity: 0.22,
+    shadowBlur: 2.6,
+    shadowOffsetX: 0,
+    shadowOffsetY: 2.2,
+    patternPresetId: "checker",
+    gradientPresetId: "sunset",
+    patternControls: { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0, repeatX: 1, repeatY: 1, mirrorRepeat: false },
+  },
+  {
+    id: "comic",
+    name: "Comic",
+    previewShapeId: "burst",
+    fillMode: "pattern",
+    solidColor: "#111827",
+    strokeColor: "#ffffff",
+    strokeWidth: 1.8,
+    shadowColor: "#111827",
+    shadowOpacity: 0.18,
+    shadowBlur: 1.8,
+    shadowOffsetX: 0.8,
+    shadowOffsetY: 1.8,
+    patternPresetId: "halftone",
+    gradientPresetId: "prism",
+    patternControls: { scale: 0.9, offsetX: 0, offsetY: 0, rotationDeg: 0, repeatX: 1.3, repeatY: 1.3, mirrorRepeat: false },
+  },
+  {
+    id: "chrome-x",
+    name: "Chrome",
+    previewShapeId: "shield-alt",
+    fillMode: "gradient",
+    solidColor: "#9ca3af",
+    strokeColor: "#f8fafc",
+    strokeWidth: 1.3,
+    shadowColor: "#334155",
+    shadowOpacity: 0.2,
+    shadowBlur: 2.6,
+    shadowOffsetX: 0,
+    shadowOffsetY: 2,
+    patternPresetId: "carbon",
+    gradientPresetId: "chrome",
+    patternControls: { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0, repeatX: 1, repeatY: 1, mirrorRepeat: false },
+  },
+  {
+    id: "tactical",
+    name: "Tactical",
+    previewShapeId: "shield-point",
+    fillMode: "pattern",
+    solidColor: "#2f4637",
+    strokeColor: "#ecfdf5",
+    strokeWidth: 1.2,
+    shadowColor: "#0f1720",
+    shadowOpacity: 0.24,
+    shadowBlur: 2.4,
+    shadowOffsetX: 0,
+    shadowOffsetY: 2.2,
+    patternPresetId: "digital-camo",
+    gradientPresetId: "jade",
+    patternControls: { scale: 0.95, offsetX: 0, offsetY: 0, rotationDeg: 0, repeatX: 1.45, repeatY: 1.45, mirrorRepeat: false },
+  },
+  {
+    id: "ocean",
+    name: "Ocean",
+    previewShapeId: "drop",
+    fillMode: "gradient",
+    solidColor: "#1463ff",
+    strokeColor: "#eff6ff",
+    strokeWidth: 1.5,
+    shadowColor: "#082f49",
+    shadowOpacity: 0.24,
+    shadowBlur: 2.8,
+    shadowOffsetX: 0,
+    shadowOffsetY: 2,
+    patternPresetId: "wave-lines",
+    gradientPresetId: "deep-ocean",
+    patternControls: { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0, repeatX: 1, repeatY: 1, mirrorRepeat: false },
+  },
+  {
+    id: "inferno",
+    name: "Inferno",
+    previewShapeId: "flame",
+    fillMode: "gradient",
+    solidColor: "#b91c1c",
+    strokeColor: "#fff7ed",
+    strokeWidth: 1.5,
+    shadowColor: "#7c2d12",
+    shadowOpacity: 0.26,
+    shadowBlur: 3,
+    shadowOffsetX: 0,
+    shadowOffsetY: 2.2,
+    patternPresetId: "flames-pattern",
+    gradientPresetId: "fire",
+    patternControls: { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0, repeatX: 1, repeatY: 1, mirrorRepeat: false },
+  },
+  {
+    id: "toxic",
+    name: "Toxic",
+    previewShapeId: "hex",
+    fillMode: "gradient",
+    solidColor: "#65a30d",
+    strokeColor: "#f7fee7",
+    strokeWidth: 1.4,
+    shadowColor: "#14532d",
+    shadowOpacity: 0.28,
+    shadowBlur: 3.4,
+    shadowOffsetX: 0,
+    shadowOffsetY: 0,
+    patternPresetId: "hazard",
+    gradientPresetId: "toxic-lime",
+    patternControls: { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0, repeatX: 1, repeatY: 1, mirrorRepeat: false },
+  },
+  {
+    id: "candy",
+    name: "Candy",
+    previewShapeId: "heart",
+    fillMode: "gradient",
+    solidColor: "#ec4899",
+    strokeColor: "#fff7fb",
+    strokeWidth: 1.6,
+    shadowColor: "#9d174d",
+    shadowOpacity: 0.18,
+    shadowBlur: 2.2,
+    shadowOffsetX: 0,
+    shadowOffsetY: 1.8,
+    patternPresetId: "hearts",
+    gradientPresetId: "cotton-candy",
+    patternControls: { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0, repeatX: 1, repeatY: 1, mirrorRepeat: false },
+  },
+  {
+    id: "paper-cut-style",
+    name: "Paper Cut",
+    previewShapeId: "speech",
+    fillMode: "pattern",
+    solidColor: "#cbd5e1",
+    strokeColor: "#ffffff",
+    strokeWidth: 1.8,
+    shadowColor: "#64748b",
+    shadowOpacity: 0.18,
+    shadowBlur: 2.2,
+    shadowOffsetX: 0,
+    shadowOffsetY: 2,
+    patternPresetId: "paper-cut",
+    gradientPresetId: "pearl",
+    patternControls: { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0, repeatX: 1, repeatY: 1, mirrorRepeat: false },
+  },
+  {
+    id: "wild",
+    name: "Wild",
+    previewShapeId: "paw",
+    fillMode: "pattern",
+    solidColor: "#7c2d12",
+    strokeColor: "#fff7ed",
+    strokeWidth: 1.3,
+    shadowColor: "#2b190d",
+    shadowOpacity: 0.22,
+    shadowBlur: 2.4,
+    shadowOffsetX: 0,
+    shadowOffsetY: 2.2,
+    patternPresetId: "leopard",
+    gradientPresetId: "desert-sun",
+    patternControls: { scale: 0.95, offsetX: 0, offsetY: 0, rotationDeg: 0, repeatX: 1.2, repeatY: 1.2, mirrorRepeat: false },
+  },
+  {
+    id: "royal",
+    name: "Royal",
+    previewShapeId: "crown",
+    fillMode: "gradient",
+    solidColor: "#4c1d95",
+    strokeColor: "#f5ecff",
+    strokeWidth: 1.5,
+    shadowColor: "#2e1065",
+    shadowOpacity: 0.22,
+    shadowBlur: 2.8,
+    shadowOffsetX: 0,
+    shadowOffsetY: 2,
+    patternPresetId: "diamonds-pattern",
+    gradientPresetId: "royal-velvet",
+    patternControls: { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0, repeatX: 1, repeatY: 1, mirrorRepeat: false },
+  },
+  {
+    id: "midnight",
+    name: "Midnight",
+    previewShapeId: "diamond",
+    fillMode: "gradient",
+    solidColor: "#111827",
+    strokeColor: "#e2e8f0",
+    strokeWidth: 1.3,
+    shadowColor: "#020617",
+    shadowOpacity: 0.28,
+    shadowBlur: 3.2,
+    shadowOffsetX: 0,
+    shadowOffsetY: 2,
+    patternPresetId: "pixel-rain",
+    gradientPresetId: "obsidian",
+    patternControls: { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0, repeatX: 1, repeatY: 1, mirrorRepeat: false },
+  },
+  {
+    id: "street-art",
+    name: "Street Art",
+    previewShapeId: "scroll-banner",
+    fillMode: "pattern",
+    solidColor: "#1f2937",
+    strokeColor: "#ffffff",
+    strokeWidth: 1.9,
+    shadowColor: "#111827",
+    shadowOpacity: 0.24,
+    shadowBlur: 2.6,
+    shadowOffsetX: 0.6,
+    shadowOffsetY: 2,
+    patternPresetId: "spray-paint",
+    gradientPresetId: "sunset",
+    patternControls: { scale: 0.92, offsetX: 0, offsetY: 0, rotationDeg: -10, repeatX: 1.35, repeatY: 1.35, mirrorRepeat: false },
+  },
+  {
+    id: "retro-pop",
+    name: "Retro Pop",
+    previewShapeId: "flower",
+    fillMode: "pattern",
+    solidColor: "#f97316",
+    strokeColor: "#fff7ed",
+    strokeWidth: 1.5,
+    shadowColor: "#7c2d12",
+    shadowOpacity: 0.18,
+    shadowBlur: 2,
+    shadowOffsetX: 0,
+    shadowOffsetY: 1.8,
+    patternPresetId: "memphis",
+    gradientPresetId: "peach-glow",
+    patternControls: { scale: 0.9, offsetX: 0, offsetY: 0, rotationDeg: -6, repeatX: 1.35, repeatY: 1.35, mirrorRepeat: false },
+  },
+  {
+    id: "galaxy",
+    name: "Galaxy",
+    previewShapeId: "sparkle-8",
+    fillMode: "gradient",
+    solidColor: "#312e81",
+    strokeColor: "#e9d5ff",
+    strokeWidth: 1.4,
+    shadowColor: "#312e81",
+    shadowOpacity: 0.3,
+    shadowBlur: 4.2,
+    shadowOffsetX: 0,
+    shadowOffsetY: 0,
+    patternPresetId: "stars-pattern",
+    gradientPresetId: "synthwave",
+    patternControls: { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0, repeatX: 1, repeatY: 1, mirrorRepeat: false },
+  },
+  {
+    id: "blueprint",
+    name: "Blueprint",
+    previewShapeId: "frame",
+    fillMode: "pattern",
+    solidColor: "#1d4ed8",
+    strokeColor: "#eff6ff",
+    strokeWidth: 1.4,
+    shadowColor: "#1e3a8a",
+    shadowOpacity: 0.2,
+    shadowBlur: 2.4,
+    shadowOffsetX: 0,
+    shadowOffsetY: 2,
+    patternPresetId: "graph-paper",
+    gradientPresetId: "steel",
+    patternControls: { scale: 0.92, offsetX: 0, offsetY: 0, rotationDeg: 0, repeatX: 1.25, repeatY: 1.25, mirrorRepeat: false },
+  },
+  {
+    id: "emerald",
+    name: "Emerald",
+    previewShapeId: "gem-cut",
+    fillMode: "gradient",
+    solidColor: "#047857",
+    strokeColor: "#ecfdf5",
+    strokeWidth: 1.4,
+    shadowColor: "#064e3b",
+    shadowOpacity: 0.2,
+    shadowBlur: 2.4,
+    shadowOffsetX: 0,
+    shadowOffsetY: 2,
+    patternPresetId: "scales",
+    gradientPresetId: "jade",
+    patternControls: { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0, repeatX: 1, repeatY: 1, mirrorRepeat: false },
+  },
+  {
+    id: "rose-glam",
+    name: "Rose Glam",
+    previewShapeId: "medallion-ribbon",
+    fillMode: "gradient",
+    solidColor: "#b76e79",
+    strokeColor: "#fff1f2",
+    strokeWidth: 1.5,
+    shadowColor: "#881337",
+    shadowOpacity: 0.18,
+    shadowBlur: 2.2,
+    shadowOffsetX: 0,
+    shadowOffsetY: 1.8,
+    patternPresetId: "diamonds-pattern",
+    gradientPresetId: "rose-gold",
+    patternControls: { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0, repeatX: 1, repeatY: 1, mirrorRepeat: false },
+  },
+  {
+    id: "bandana-west",
+    name: "Bandana West",
+    previewShapeId: "diamond-cut",
+    fillMode: "pattern",
+    solidColor: "#7c2d12",
+    strokeColor: "#fff7ed",
+    strokeWidth: 1.3,
+    shadowColor: "#431407",
+    shadowOpacity: 0.22,
+    shadowBlur: 2.2,
+    shadowOffsetX: 0,
+    shadowOffsetY: 2,
+    patternPresetId: "bandana",
+    gradientPresetId: "desert-sun",
+    patternControls: { scale: 0.9, offsetX: 0, offsetY: 0, rotationDeg: 0, repeatX: 1.25, repeatY: 1.25, mirrorRepeat: false },
+  },
+  {
+    id: "mesh-club",
+    name: "Mesh Club",
+    previewShapeId: "hex-point",
+    fillMode: "pattern",
+    solidColor: "#0f172a",
+    strokeColor: "#e2e8f0",
+    strokeWidth: 1.2,
+    shadowColor: "#020617",
+    shadowOpacity: 0.3,
+    shadowBlur: 3.4,
+    shadowOffsetX: 0,
+    shadowOffsetY: 0,
+    patternPresetId: "mesh-grid",
+    gradientPresetId: "midnight-neon",
+    patternControls: { scale: 0.84, offsetX: 0, offsetY: 0, rotationDeg: 12, repeatX: 1.7, repeatY: 1.7, mirrorRepeat: false },
+  },
+  {
+    id: "ice-frost",
+    name: "Ice Frost",
+    previewShapeId: "capsule-vertical",
+    fillMode: "gradient",
+    solidColor: "#38bdf8",
+    strokeColor: "#f0f9ff",
+    strokeWidth: 1.5,
+    shadowColor: "#0f172a",
+    shadowOpacity: 0.14,
+    shadowBlur: 2.4,
+    shadowOffsetX: 0,
+    shadowOffsetY: 2,
+    patternPresetId: "graph-paper",
+    gradientPresetId: "ice",
+    patternControls: { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0, repeatX: 1, repeatY: 1, mirrorRepeat: false },
+  },
+  {
+    id: "desert",
+    name: "Desert",
+    previewShapeId: "arch",
+    fillMode: "gradient",
+    solidColor: "#b45309",
+    strokeColor: "#fef3c7",
+    strokeWidth: 1.4,
+    shadowColor: "#78350f",
+    shadowOpacity: 0.18,
+    shadowBlur: 2.2,
+    shadowOffsetX: 0,
+    shadowOffsetY: 2,
+    patternPresetId: "topography",
+    gradientPresetId: "desert-sun",
+    patternControls: { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0, repeatX: 1, repeatY: 1, mirrorRepeat: false },
+  },
+  {
+    id: "snake-luxe",
+    name: "Snake Luxe",
+    previewShapeId: "shield-round",
+    fillMode: "pattern",
+    solidColor: "#334155",
+    strokeColor: "#f8fafc",
+    strokeWidth: 1.3,
+    shadowColor: "#0f172a",
+    shadowOpacity: 0.26,
+    shadowBlur: 2.6,
+    shadowOffsetX: 0,
+    shadowOffsetY: 2,
+    patternPresetId: "snake-skin",
+    gradientPresetId: "obsidian",
+    patternControls: { scale: 0.92, offsetX: 0, offsetY: 0, rotationDeg: 0, repeatX: 1.3, repeatY: 1.3, mirrorRepeat: false },
+  },
+  {
+    id: "confetti-party",
+    name: "Confetti Party",
+    previewShapeId: "burst-24",
+    fillMode: "pattern",
+    solidColor: "#7c3aed",
+    strokeColor: "#ffffff",
+    strokeWidth: 1.6,
+    shadowColor: "#4c1d95",
+    shadowOpacity: 0.18,
+    shadowBlur: 2.2,
+    shadowOffsetX: 0,
+    shadowOffsetY: 1.8,
+    patternPresetId: "confetti",
+    gradientPresetId: "prism",
+    patternControls: { scale: 0.88, offsetX: 0, offsetY: 0, rotationDeg: 0, repeatX: 1.2, repeatY: 1.2, mirrorRepeat: false },
+  },
+  {
+    id: "patchwork",
+    name: "Patchwork",
+    previewShapeId: "notched-rect",
+    fillMode: "pattern",
+    solidColor: "#a16207",
+    strokeColor: "#fff7ed",
+    strokeWidth: 1.5,
+    shadowColor: "#78350f",
+    shadowOpacity: 0.18,
+    shadowBlur: 2.2,
+    shadowOffsetX: 0,
+    shadowOffsetY: 2,
+    patternPresetId: "patchwork",
+    gradientPresetId: "champagne",
+    patternControls: { scale: 0.92, offsetX: 0, offsetY: 0, rotationDeg: 0, repeatX: 1.15, repeatY: 1.15, mirrorRepeat: false },
+  },
+  {
+    id: "graphite",
+    name: "Graphite",
+    previewShapeId: "parallelogram",
+    fillMode: "pattern",
+    solidColor: "#1f2937",
+    strokeColor: "#f8fafc",
+    strokeWidth: 1.2,
+    shadowColor: "#111827",
+    shadowOpacity: 0.24,
+    shadowBlur: 2.8,
+    shadowOffsetX: 0.4,
+    shadowOffsetY: 2.2,
+    patternPresetId: "carbon",
+    gradientPresetId: "chrome",
+    patternControls: { scale: 0.94, offsetX: 0, offsetY: 0, rotationDeg: -8, repeatX: 1.25, repeatY: 1.25, mirrorRepeat: false },
+  },
+  {
+    id: "pixel-core",
+    name: "Pixel Core",
+    previewShapeId: "folder-tab",
+    fillMode: "pattern",
+    solidColor: "#111827",
+    strokeColor: "#e0f2fe",
+    strokeWidth: 1.3,
+    shadowColor: "#0c4a6e",
+    shadowOpacity: 0.24,
+    shadowBlur: 3.2,
+    shadowOffsetX: 0,
+    shadowOffsetY: 0,
+    patternPresetId: "pixel-rain",
+    gradientPresetId: "arctic-night",
+    patternControls: { scale: 0.86, offsetX: 0, offsetY: 0, rotationDeg: 0, repeatX: 1.55, repeatY: 1.55, mirrorRepeat: false },
+  },
+  {
+    id: "barcode-tech",
+    name: "Barcode Tech",
+    previewShapeId: "label-notch",
+    fillMode: "pattern",
+    solidColor: "#111111",
+    strokeColor: "#ffffff",
+    strokeWidth: 1.4,
+    shadowColor: "#111827",
+    shadowOpacity: 0.2,
+    shadowBlur: 2.4,
+    shadowOffsetX: 0,
+    shadowOffsetY: 2,
+    patternPresetId: "barcode",
+    gradientPresetId: "steel",
+    patternControls: { scale: 0.92, offsetX: 0, offsetY: 0, rotationDeg: 0, repeatX: 1.3, repeatY: 1.3, mirrorRepeat: false },
+  },
+  {
+    id: "marble-club",
+    name: "Marble Club",
+    previewShapeId: "wave-badge",
+    fillMode: "pattern",
+    solidColor: "#475569",
+    strokeColor: "#ffffff",
+    strokeWidth: 1.4,
+    shadowColor: "#1e293b",
+    shadowOpacity: 0.18,
+    shadowBlur: 2.6,
+    shadowOffsetX: 0,
+    shadowOffsetY: 2,
+    patternPresetId: "marble",
+    gradientPresetId: "pearl",
+    patternControls: { scale: 0.88, offsetX: 0, offsetY: 0, rotationDeg: 0, repeatX: 1.1, repeatY: 1.1, mirrorRepeat: false },
+  },
 ];
 
 export const DESIGN_PATTERN_PRESETS: DesignPatternPreset[] = patternDefinitions.map((preset) => ({
@@ -2142,6 +3526,93 @@ export const DESIGN_SHAPE_PRESETS: DesignShapePreset[] = shapeDefinitions.map((p
   };
 });
 
+export const DESIGN_STYLE_PRESETS: DesignStylePreset[] = styleDefinitions.map((preset) => ({
+  ...preset,
+  previewSrc: createStylePreviewSrc(preset),
+}));
+
+const numbersMatch = (left: number, right: number, tolerance = 0.001) => Math.abs(left - right) <= tolerance;
+
+const patternControlsMatch = (left: DesignPatternControls, right: DesignPatternControls) =>
+  numbersMatch(left.scale, right.scale) &&
+  numbersMatch(left.offsetX, right.offsetX) &&
+  numbersMatch(left.offsetY, right.offsetY) &&
+  numbersMatch(left.rotationDeg, right.rotationDeg) &&
+  numbersMatch(left.repeatX, right.repeatX) &&
+  numbersMatch(left.repeatY, right.repeatY) &&
+  left.mirrorRepeat === right.mirrorRepeat;
+
+export const applyDesignStylePreset = (
+  style: DesignLayerStyle,
+  preset: DesignStylePreset
+): DesignLayerStyle =>
+  sanitizeDesignLayerStyle({
+    ...style,
+    fillMode: preset.fillMode,
+    solidColor: preset.solidColor,
+    strokeColor: preset.strokeColor,
+    strokeWidth: preset.strokeWidth,
+    shadowColor: preset.shadowColor,
+    shadowOpacity: preset.shadowOpacity,
+    shadowBlur: preset.shadowBlur,
+    shadowOffsetX: preset.shadowOffsetX,
+    shadowOffsetY: preset.shadowOffsetY,
+    printTexture: { ...DEFAULT_PRINT_TEXTURE_STYLE },
+    printModeId: null,
+    patternPresetId: preset.patternPresetId,
+    gradientPresetId: preset.gradientPresetId,
+    patternControls: { ...preset.patternControls },
+  }) || style;
+
+export const getMatchingDesignStylePresetId = (style: DesignLayerStyle | null | undefined) => {
+  const normalizedStyle = style ? sanitizeDesignLayerStyle(style) : null;
+  if (!normalizedStyle) {
+    return null;
+  }
+
+  const match = DESIGN_STYLE_PRESETS.find((preset) => {
+    if (!isPrintTextureDisabled(normalizedStyle.printTexture)) {
+      return false;
+    }
+    if (normalizedStyle.fillMode !== preset.fillMode) {
+      return false;
+    }
+    if (normalizeHex(normalizedStyle.solidColor) !== normalizeHex(preset.solidColor)) {
+      return false;
+    }
+    if (normalizeHex(normalizedStyle.strokeColor) !== normalizeHex(preset.strokeColor)) {
+      return false;
+    }
+    if (!numbersMatch(normalizedStyle.strokeWidth, preset.strokeWidth)) {
+      return false;
+    }
+    if (normalizeHex(normalizedStyle.shadowColor) !== normalizeHex(preset.shadowColor)) {
+      return false;
+    }
+    if (!numbersMatch(normalizedStyle.shadowOpacity, preset.shadowOpacity)) {
+      return false;
+    }
+    if (!numbersMatch(normalizedStyle.shadowBlur, preset.shadowBlur)) {
+      return false;
+    }
+    if (!numbersMatch(normalizedStyle.shadowOffsetX, preset.shadowOffsetX)) {
+      return false;
+    }
+    if (!numbersMatch(normalizedStyle.shadowOffsetY, preset.shadowOffsetY)) {
+      return false;
+    }
+    if (normalizedStyle.patternPresetId !== preset.patternPresetId) {
+      return false;
+    }
+    if (normalizedStyle.gradientPresetId !== preset.gradientPresetId) {
+      return false;
+    }
+    return patternControlsMatch(normalizedStyle.patternControls, preset.patternControls);
+  });
+
+  return match?.id || null;
+};
+
 export const createGeneratedDesignAsset = ({
   style,
   isRussian,
@@ -2154,6 +3625,12 @@ export const createGeneratedDesignAsset = ({
     solidColor,
     strokeColor,
     strokeWidth,
+    shadowColor,
+    shadowOpacity,
+    shadowBlur,
+    shadowOffsetX,
+    shadowOffsetY,
+    printTexture,
     textureDataUrl,
     textureFileName,
     textureWidth,
@@ -2201,6 +3678,12 @@ export const createGeneratedDesignAsset = ({
     textureUrl: createShapeTextureSvg(shapePreset, defs, fill, solidFill.stroke, {
       strokeColor,
       strokeWidth,
+      shadowColor,
+      shadowOpacity,
+      shadowBlur,
+      shadowOffsetX,
+      shadowOffsetY,
+      printTexture,
     }),
     scale: shapePreset.defaultScale,
   };
