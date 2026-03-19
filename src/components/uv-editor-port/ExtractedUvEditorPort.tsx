@@ -19,8 +19,11 @@ import {
 } from "./brush-presets";
 import type { BrushPreset, BrushPresetKind } from "./brush-presets";
 import { DesignLayerPanel } from "./DesignLayerPanel";
-import { createGeneratedDesignAsset } from "./design-presets";
-import type { DesignLayerRequest } from "./design-presets";
+import {
+  createGeneratedDesignAsset,
+  sanitizeDesignLayerStyle,
+} from "./design-presets";
+import type { DesignLayerStyle } from "./design-presets";
 import { createUvPortDocumentFromLegacyProps } from "./legacy-adapter";
 import { GFTO_TEXT_FONT_OPTIONS } from "./gfto-font-options";
 import type {
@@ -195,6 +198,7 @@ type EditorHistorySnapshot = {
     blendMode: UvLayerBlendMode;
     opacity: number;
     textStyle?: UvPortLayer["textStyle"];
+    designStyle?: UvPortLayer["designStyle"];
     projection?: UvPortLayer["projection"];
   }[];
   baseLayerTextureUrls: Record<string, string>;
@@ -262,6 +266,7 @@ const cloneLayer = (layer: UvPortLayer): UvPortLayer => ({
   ...layer,
   uv: cloneUv(layer.uv),
   textStyle: layer.textStyle ? { ...layer.textStyle } : layer.textStyle,
+  designStyle: layer.designStyle ? sanitizeDesignLayerStyle(layer.designStyle) : layer.designStyle,
   projection: layer.projection
     ? {
         position: [...layer.projection.position] as [number, number, number],
@@ -302,12 +307,14 @@ const cloneAppliedLayer = (
     blendMode: UvLayerBlendMode;
     opacity: number;
     textStyle?: UvPortLayer["textStyle"];
+    designStyle?: UvPortLayer["designStyle"];
     projection?: DecalProjectionBasis | null;
   }
 ) => ({
   ...layer,
   uv: [layer.uv[0], layer.uv[1]] as [number, number],
   textStyle: layer.textStyle ? { ...layer.textStyle } : layer.textStyle,
+  designStyle: layer.designStyle ? sanitizeDesignLayerStyle(layer.designStyle) : layer.designStyle,
   projection: layer.projection
     ? {
         position: [...layer.projection.position] as [number, number, number],
@@ -1694,14 +1701,33 @@ const getLocaleStrings = (copy: UvDecalEditorProps["copy"]) => {
     brushPresets: isRussian ? "\u041a\u0438\u0441\u0442\u0438" : "Brushes",
     stampPresets: isRussian ? "\u0428\u0442\u0430\u043c\u043f\u044b" : "Stamps",
     designTitle: isRussian ? "\u0414\u0438\u0437\u0430\u0439\u043d" : "Design",
-    designFill: isRussian ? "\u0417\u0430\u043b\u0438\u0432\u043a\u0430" : "Fill",
+    designFill: "\u0417\u0430\u043b\u0438\u0432\u043a\u0430",
     designSolid: isRussian ? "\u0426\u0432\u0435\u0442" : "Solid",
     designPattern: isRussian ? "\u041f\u0430\u0442\u0442\u0435\u0440\u043d" : "Pattern",
+    designTexture: isRussian ? "\u0422\u0435\u043a\u0441\u0442\u0443\u0440\u0430" : "Texture",
     designGradient: isRussian ? "\u0413\u0440\u0430\u0434\u0438\u0435\u043d\u0442" : "Gradient",
     designShape: isRussian ? "\u0424\u0438\u0433\u0443\u0440\u0430" : "Shape",
     designColor: isRussian ? "\u0426\u0432\u0435\u0442" : "Color",
+    designStroke: isRussian ? "\u041e\u0431\u0432\u043e\u0434\u043a\u0430" : "Stroke",
+    designStrokeColor: isRussian ? "\u0426\u0432\u0435\u0442 \u043e\u0431\u0432\u043e\u0434\u043a\u0438" : "Stroke color",
+    designStrokeWidth: isRussian ? "\u0422\u043e\u043b\u0449\u0438\u043d\u0430" : "Thickness",
     designPatternPreset: isRussian ? "\u041f\u0430\u0442\u0442\u0435\u0440\u043d" : "Pattern",
+    designTextureUpload: isRussian ? "\u0417\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044c \u0442\u0435\u043a\u0441\u0442\u0443\u0440\u0443" : "Upload texture",
+    designTextureReplace: isRussian ? "\u0417\u0430\u043c\u0435\u043d\u0438\u0442\u044c \u0442\u0435\u043a\u0441\u0442\u0443\u0440\u0443" : "Replace texture",
+    designTextureMissing: isRussian ? "\u0424\u0430\u0439\u043b \u043d\u0435 \u0432\u044b\u0431\u0440\u0430\u043d" : "No file selected",
+    designTextureAutoCenter: isRussian
+      ? "\u0410\u0432\u0442\u043e\u0446\u0435\u043d\u0442\u0440 \u0432 \u0444\u043e\u0440\u043c\u0435"
+      : "Auto-center in shape",
     designGradientPreset: isRussian ? "\u0413\u0440\u0430\u0434\u0438\u0435\u043d\u0442" : "Gradient",
+    designPatternScale: isRussian ? "\u041c\u0430\u0441\u0448\u0442\u0430\u0431" : "Scale",
+    designPatternOffsetX: isRussian ? "\u0421\u0434\u0432\u0438\u0433 X" : "Offset X",
+    designPatternOffsetY: isRussian ? "\u0421\u0434\u0432\u0438\u0433 Y" : "Offset Y",
+    designPatternRotation: isRussian ? "\u041f\u043e\u0432\u043e\u0440\u043e\u0442" : "Rotation",
+    designPatternRepeatX: isRussian ? "\u041f\u043e\u0432\u0442\u043e\u0440 X" : "Repeat X",
+    designPatternRepeatY: isRussian ? "\u041f\u043e\u0432\u0442\u043e\u0440 Y" : "Repeat Y",
+    designPatternMirrorRepeat: isRussian
+      ? "\u0417\u0435\u0440\u043a\u0430\u043b\u044c\u043d\u044b\u0439 \u043f\u043e\u0432\u0442\u043e\u0440"
+      : "Mirror repeat",
     designAddLayer: isRussian ? "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0434\u0438\u0437\u0430\u0439\u043d" : "Add design",
     previewTitle: "UV Preview",
     blendMode: isRussian ? "Наложение" : "Blend",
@@ -1868,20 +1894,56 @@ const getLocaleStrings = (copy: UvDecalEditorProps["copy"]) => {
       ? "Создать новый слой-декаль из введённого текста и сделать его активным."
       : "Create a new decal layer from the entered text and make it active.",
     designFillHint: isRussian
-      ? "\u0412\u044b\u0431\u0440\u0430\u0442\u044c, \u0447\u0435\u043c \u0431\u0443\u0434\u0435\u0442 \u0437\u0430\u043f\u043e\u043b\u043d\u0435\u043d\u0430 \u0444\u0438\u0433\u0443\u0440\u0430: \u0446\u0432\u0435\u0442\u043e\u043c, \u043f\u0430\u0442\u0442\u0435\u0440\u043d\u043e\u043c \u0438\u043b\u0438 \u0433\u0440\u0430\u0434\u0438\u0435\u043d\u0442\u043e\u043c."
-      : "Choose how the shape should be filled: a solid color, a pattern, or a gradient.",
+      ? "\u0412\u044b\u0431\u0440\u0430\u0442\u044c, \u0447\u0435\u043c \u0431\u0443\u0434\u0435\u0442 \u0437\u0430\u043f\u043e\u043b\u043d\u0435\u043d\u0430 \u0444\u0438\u0433\u0443\u0440\u0430: \u0446\u0432\u0435\u0442\u043e\u043c, \u043f\u0430\u0442\u0442\u0435\u0440\u043d\u043e\u043c, \u0441\u0432\u043e\u0435\u0439 \u0442\u0435\u043a\u0441\u0442\u0443\u0440\u043e\u0439 \u0438\u043b\u0438 \u0433\u0440\u0430\u0434\u0438\u0435\u043d\u0442\u043e\u043c."
+      : "Choose how the shape should be filled: a solid color, a pattern, a custom texture, or a gradient.",
     designColorHint: isRussian
       ? "\u0412\u044b\u0431\u0440\u0430\u0442\u044c \u043e\u0441\u043d\u043e\u0432\u043d\u043e\u0439 \u0446\u0432\u0435\u0442 \u0434\u043b\u044f \u043d\u043e\u0432\u043e\u0439 \u0444\u0438\u0433\u0443\u0440\u044b."
       : "Choose the main color for the new shape.",
+    designStrokeColorHint: isRussian
+      ? "\u0412\u044b\u0431\u0440\u0430\u0442\u044c \u0446\u0432\u0435\u0442 \u0432\u043d\u0435\u0448\u043d\u0435\u0439 \u043e\u0431\u0432\u043e\u0434\u043a\u0438 \u0444\u0438\u0433\u0443\u0440\u044b."
+      : "Choose the color of the outer outline around the shape.",
+    designStrokeWidthHint: isRussian
+      ? "\u041d\u0430\u0441\u0442\u0440\u043e\u0438\u0442\u044c \u0442\u043e\u043b\u0449\u0438\u043d\u0443 \u0432\u043d\u0435\u0448\u043d\u0435\u0439 \u043e\u0431\u0432\u043e\u0434\u043a\u0438. 0 \u043e\u0442\u043a\u043b\u044e\u0447\u0430\u0435\u0442 \u044d\u0444\u0444\u0435\u043a\u0442."
+      : "Adjust the outer outline thickness. Set it to 0 to disable the effect.",
     designPatternHint: isRussian
       ? "\u0412\u044b\u0431\u0440\u0430\u0442\u044c \u043f\u0430\u0442\u0442\u0435\u0440\u043d, \u043a\u043e\u0442\u043e\u0440\u044b\u043c \u0431\u0443\u0434\u0435\u0442 \u0437\u0430\u043f\u043e\u043b\u043d\u0435\u043d\u0430 \u0444\u0438\u0433\u0443\u0440\u0430."
       : "Choose the pattern used to fill the shape.",
+    designTextureHint: isRussian
+      ? "\u0417\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044c \u0441\u0432\u043e\u044e \u043a\u0430\u0440\u0442\u0438\u043d\u043a\u0443 \u0434\u043b\u044f \u0437\u0430\u043b\u0438\u0432\u043a\u0438 \u0444\u0438\u0433\u0443\u0440\u044b."
+      : "Upload your own image to fill the shape.",
+    designTextureUploadHint: isRussian
+      ? "\u0412\u044b\u0431\u0440\u0430\u0442\u044c \u0438\u043b\u0438 \u0437\u0430\u043c\u0435\u043d\u0438\u0442\u044c \u043a\u0430\u0440\u0442\u0438\u043d\u043a\u0443, \u043a\u043e\u0442\u043e\u0440\u0430\u044f \u0431\u0443\u0434\u0435\u0442 \u0432\u0441\u0442\u0430\u0432\u043b\u0435\u043d\u0430 \u0432\u043d\u0443\u0442\u0440\u044c \u0444\u0438\u0433\u0443\u0440\u044b."
+      : "Choose or replace the image that will be placed inside the shape.",
+    designTextureAutoCenterHint: isRussian
+      ? "\u0410\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u0435\u0441\u043a\u0438 \u0432\u044b\u0440\u0430\u0432\u043d\u044f\u0442\u044c \u0438 \u0446\u0435\u043d\u0442\u0440\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0442\u0435\u043a\u0441\u0442\u0443\u0440\u0443 \u0432\u043d\u0443\u0442\u0440\u0438 \u0444\u043e\u0440\u043c\u044b."
+      : "Automatically align and center the texture inside the shape.",
     designGradientHint: isRussian
       ? "\u0412\u044b\u0431\u0440\u0430\u0442\u044c \u0433\u0440\u0430\u0434\u0438\u0435\u043d\u0442, \u043a\u043e\u0442\u043e\u0440\u044b\u043c \u0431\u0443\u0434\u0435\u0442 \u0437\u0430\u043f\u043e\u043b\u043d\u0435\u043d\u0430 \u0444\u0438\u0433\u0443\u0440\u0430."
       : "Choose the gradient used to fill the shape.",
     designShapeHint: isRussian
       ? "\u0412\u044b\u0431\u0440\u0430\u0442\u044c \u0444\u043e\u0440\u043c\u0443 \u043d\u043e\u0432\u043e\u0439 \u0434\u0435\u043a\u0430\u043b\u0438."
       : "Choose the shape of the new decal.",
+    designPatternScaleHint: isRussian
+      ? "\u0418\u0437\u043c\u0435\u043d\u0438\u0442\u044c \u043e\u0431\u0449\u0438\u0439 \u043c\u0430\u0441\u0448\u0442\u0430\u0431 \u0437\u0430\u043b\u0438\u0432\u043a\u0438 \u0432\u043d\u0443\u0442\u0440\u0438 \u0444\u0438\u0433\u0443\u0440\u044b."
+      : "Adjust the overall size of the fill inside the shape.",
+    designPatternOffsetXHint: isRussian
+      ? "\u0421\u0434\u0432\u0438\u043d\u0443\u0442\u044c \u0437\u0430\u043b\u0438\u0432\u043a\u0443 \u043f\u043e \u0433\u043e\u0440\u0438\u0437\u043e\u043d\u0442\u0430\u043b\u0438."
+      : "Move the fill horizontally inside the shape.",
+    designPatternOffsetYHint: isRussian
+      ? "\u0421\u0434\u0432\u0438\u043d\u0443\u0442\u044c \u0437\u0430\u043b\u0438\u0432\u043a\u0443 \u043f\u043e \u0432\u0435\u0440\u0442\u0438\u043a\u0430\u043b\u0438."
+      : "Move the fill vertically inside the shape.",
+    designPatternRotationHint: isRussian
+      ? "\u041f\u043e\u0432\u0435\u0440\u043d\u0443\u0442\u044c \u0437\u0430\u043b\u0438\u0432\u043a\u0443 \u0432\u043d\u0443\u0442\u0440\u0438 \u0444\u0438\u0433\u0443\u0440\u044b."
+      : "Rotate the fill inside the shape.",
+    designPatternRepeatXHint: isRussian
+      ? "\u0418\u0437\u043c\u0435\u043d\u0438\u0442\u044c \u0447\u0430\u0441\u0442\u043e\u0442\u0443 \u043f\u043e\u0432\u0442\u043e\u0440\u0430 \u0437\u0430\u043b\u0438\u0432\u043a\u0438 \u043f\u043e X."
+      : "Adjust how densely the fill repeats on the X axis.",
+    designPatternRepeatYHint: isRussian
+      ? "\u0418\u0437\u043c\u0435\u043d\u0438\u0442\u044c \u0447\u0430\u0441\u0442\u043e\u0442\u0443 \u043f\u043e\u0432\u0442\u043e\u0440\u0430 \u0437\u0430\u043b\u0438\u0432\u043a\u0438 \u043f\u043e Y."
+      : "Adjust how densely the fill repeats on the Y axis.",
+    designPatternMirrorRepeatHint: isRussian
+      ? "\u0412\u043a\u043b\u044e\u0447\u0438\u0442\u044c \u0437\u0435\u0440\u043a\u0430\u043b\u044c\u043d\u043e\u0435 \u043e\u0442\u0440\u0430\u0436\u0435\u043d\u0438\u0435 \u043a\u0430\u0436\u0434\u043e\u0439 \u0432\u0442\u043e\u0440\u043e\u0439 \u043f\u043b\u0438\u0442\u043a\u0438 \u0437\u0430\u043b\u0438\u0432\u043a\u0438."
+      : "Mirror every second fill tile for a reflected repeat.",
     designAddHint: isRussian
       ? "\u0421\u043e\u0437\u0434\u0430\u0442\u044c \u043d\u043e\u0432\u0443\u044e \u0434\u0435\u043a\u0430\u043b\u044c \u0438\u0437 \u0432\u044b\u0431\u0440\u0430\u043d\u043d\u043e\u0439 \u0444\u043e\u0440\u043c\u044b \u0438 \u0442\u0435\u043a\u0443\u0449\u0435\u0439 \u0437\u0430\u043b\u0438\u0432\u043a\u0438."
       : "Create a new decal from the selected shape and fill.",
@@ -2180,6 +2242,12 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     selectedLayer &&
     (selectedLayer.kind === "decal" || selectedLayer.kind === "draft") &&
     selectedLayer.textStyle
+      ? selectedLayer
+      : null;
+  const selectedDesignLayer =
+    selectedLayer &&
+    (selectedLayer.kind === "decal" || selectedLayer.kind === "draft") &&
+    selectedLayer.designStyle
       ? selectedLayer
       : null;
   const latestInteractiveLayerId =
@@ -3169,6 +3237,7 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
         fileName: brushLayerName,
         textureUrl: dataUrl,
         textStyle: null,
+        designStyle: null,
         meshName: activeSlot,
         uv: [0.5, 0.5],
         scale: 1,
@@ -3198,6 +3267,7 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
         id: layerId,
         assetId,
         textStyle: null,
+        designStyle: null,
         projection: null,
         kind: "decal" as const,
         name: brushLayerName,
@@ -3232,6 +3302,7 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
       id: "draft:current",
       assetId: draftAssetId || null,
       textStyle: null,
+      designStyle: null,
       projection: null,
       kind: "draft" as const,
       name: locale.isRussian ? "Слой кисти" : "Brush layer",
@@ -4001,19 +4072,21 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     }
   };
 
-  const handleCreateDesignLayer = (request: DesignLayerRequest) => {
+  const handleCreateDesignLayer = (style: DesignLayerStyle) => {
     if (!onCreateGeneratedDecal) {
       return;
     }
 
     const generated = createGeneratedDesignAsset({
-      ...request,
+      style,
       isRussian: locale.isRussian,
     });
+    const normalizedStyle = sanitizeDesignLayerStyle(style);
 
     pushHistorySnapshot();
     const created = onCreateGeneratedDecal({
       ...generated,
+      designStyle: normalizedStyle,
       blendMode: DEFAULT_UV_LAYER_BLEND_MODE,
       ...(activeSlot ? { meshName: activeSlot, uv: draftUv } : {}),
     });
@@ -4021,6 +4094,38 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
       setSelectedLayerId(created.layerId);
     }
     setActiveTool("transform");
+  };
+
+  const handlePreviewDesignLayer = (style: DesignLayerStyle) => {
+    if (!selectedDesignLayer) {
+      return;
+    }
+
+    const normalizedStyle = sanitizeDesignLayerStyle(style);
+    if (!normalizedStyle) {
+      return;
+    }
+
+    const generated = createGeneratedDesignAsset({
+      style: normalizedStyle,
+      isRussian: locale.isRussian,
+    });
+
+    if (selectedDesignLayer.kind === "draft") {
+      onDraftTextureUrlChange?.(generated.textureUrl);
+      onDraftFileNameChange?.(generated.fileName);
+      setLayerUiPatch(selectedDesignLayer.id, {
+        textureUrl: generated.textureUrl,
+        name: generated.fileName,
+      });
+      return;
+    }
+
+    onUpdateAppliedLayer?.(selectedDesignLayer.id, {
+      fileName: generated.fileName,
+      textureUrl: generated.textureUrl,
+      designStyle: normalizedStyle,
+    });
   };
 
   const handleCreateTextLayer = async () => {
@@ -4244,6 +4349,7 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
         blendMode: selectedLayer.blendMode,
         opacity: selectedLayer.opacity,
         textStyle: selectedLayer.textStyle || null,
+        designStyle: selectedLayer.designStyle || null,
         projection: selectedLayer.projection || null,
       });
       if (nextLayerId) {
@@ -4832,9 +4938,12 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
                   <DesignLayerPanel
                     locale={locale}
                     brushColor={brushColor}
+                    selectedStyleId={selectedDesignLayer?.id || null}
+                    selectedStyle={selectedDesignLayer?.designStyle || null}
                     canAdd={canCreateDesignLayer}
                     onBrushColorChange={setBrushColor}
                     onAdd={handleCreateDesignLayer}
+                    onPreviewChange={handlePreviewDesignLayer}
                   />
                 ) : null}
 

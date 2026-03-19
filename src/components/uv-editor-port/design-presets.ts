@@ -1,4 +1,4 @@
-export type DesignFillMode = "solid" | "pattern" | "gradient";
+export type DesignFillMode = "solid" | "pattern" | "gradient" | "texture";
 
 export type DesignShapePreset = {
   id: string;
@@ -25,12 +25,55 @@ export type DesignGradientPreset = {
   renderDefinition: (fillId: string) => string;
 };
 
+export type DesignPatternControls = {
+  scale: number;
+  offsetX: number;
+  offsetY: number;
+  rotationDeg: number;
+  repeatX: number;
+  repeatY: number;
+  mirrorRepeat: boolean;
+};
+
+export type DesignTextureContentBounds = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+
+export type DesignLayerStyle = {
+  fillMode: DesignFillMode;
+  solidColor: string;
+  strokeColor: string;
+  strokeWidth: number;
+  textureDataUrl: string;
+  textureFileName: string;
+  textureWidth: number;
+  textureHeight: number;
+  textureAutoCenter: boolean;
+  textureContentBounds: DesignTextureContentBounds;
+  shapePresetId: string;
+  patternPresetId: string;
+  gradientPresetId: string;
+  patternControls: DesignPatternControls;
+};
+
 export type DesignLayerRequest = {
   fillMode: DesignFillMode;
   solidColor: string;
+  strokeColor: string;
+  strokeWidth: number;
+  textureDataUrl: string;
+  textureFileName: string;
+  textureWidth: number;
+  textureHeight: number;
+  textureAutoCenter: boolean;
+  textureContentBounds: DesignTextureContentBounds;
   shapePreset: DesignShapePreset;
   patternPreset: DesignPatternPreset;
   gradientPreset: DesignGradientPreset;
+  patternControls: DesignPatternControls;
 };
 
 type ShapeDefinition = Omit<DesignShapePreset, "previewSrc">;
@@ -62,6 +105,40 @@ type RadialGradientDefinitionInput = {
   fy?: string;
   stops: readonly GradientStop[];
 };
+
+export const DEFAULT_DESIGN_PATTERN_CONTROLS: DesignPatternControls = {
+  scale: 1,
+  offsetX: 0,
+  offsetY: 0,
+  rotationDeg: 0,
+  repeatX: 1,
+  repeatY: 1,
+  mirrorRepeat: false,
+};
+
+export const DEFAULT_DESIGN_TEXTURE_CONTENT_BOUNDS: DesignTextureContentBounds = {
+  left: 0,
+  top: 0,
+  width: 1,
+  height: 1,
+};
+
+export const getDefaultDesignLayerStyle = (solidColor = "#ffb347"): DesignLayerStyle => ({
+  fillMode: "solid",
+  solidColor: normalizeHex(solidColor),
+  strokeColor: "#ffffff",
+  strokeWidth: 0,
+  textureDataUrl: "",
+  textureFileName: "",
+  textureWidth: 1024,
+  textureHeight: 1024,
+  textureAutoCenter: false,
+  textureContentBounds: { ...DEFAULT_DESIGN_TEXTURE_CONTENT_BOUNDS },
+  shapePresetId: DESIGN_SHAPE_PRESETS[0]?.id || "badge",
+  patternPresetId: DESIGN_PATTERN_PRESETS[0]?.id || "checker",
+  gradientPresetId: DESIGN_GRADIENT_PRESETS[0]?.id || "sunset",
+  patternControls: { ...DEFAULT_DESIGN_PATTERN_CONTROLS },
+});
 
 const svgDataUrl = (svg: string) =>
   `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg.replace(/\s{2,}/g, " ").trim())}`;
@@ -160,6 +237,386 @@ const rgba = (value: string, alpha: number) => {
   return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${Math.max(0, Math.min(1, alpha)).toFixed(3)})`;
 };
 
+const clampNumber = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+
+const safeNumber = (value: number, fallback: number) => (Number.isFinite(value) ? value : fallback);
+
+const formatSvgNumber = (value: number) => {
+  const normalized = Math.abs(value) < 0.0001 ? 0 : value;
+  return Number.parseFloat(normalized.toFixed(4)).toString();
+};
+
+const readSvgAttribute = (value: string, name: string) => {
+  const match = value.match(new RegExp(`\\b${name}="([^"]*)"`, "i"));
+  return match ? match[1] : null;
+};
+
+const PATTERN_DEFINITION_REGEX = /^\s*<pattern\b([^>]*)>([\s\S]*?)<\/pattern>\s*$/i;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const isDesignFillMode = (value: unknown): value is DesignFillMode =>
+  value === "solid" || value === "pattern" || value === "gradient" || value === "texture";
+
+const sanitizeTextureDataUrl = (value: unknown) => (typeof value === "string" ? value.trim() : "");
+
+const sanitizeTextureDimension = (value: unknown, fallback: number) =>
+  clampNumber(safeNumber(typeof value === "number" ? value : NaN, fallback), 1, 8192);
+
+const serializeTextureDataUrl = (value: string) => (value ? `${value.length}:${value.slice(0, 96)}` : "");
+
+const sanitizeTextureContentBounds = (value: unknown): DesignTextureContentBounds => {
+  const source = isRecord(value) ? value : {};
+  const left = clampNumber(safeNumber(typeof source.left === "number" ? source.left : NaN, 0), 0, 1);
+  const top = clampNumber(safeNumber(typeof source.top === "number" ? source.top : NaN, 0), 0, 1);
+  const width = clampNumber(safeNumber(typeof source.width === "number" ? source.width : NaN, 1), 0.0001, 1);
+  const height = clampNumber(safeNumber(typeof source.height === "number" ? source.height : NaN, 1), 0.0001, 1);
+
+  return {
+    left: Math.min(left, 1 - width),
+    top: Math.min(top, 1 - height),
+    width,
+    height,
+  };
+};
+
+const sanitizeDesignPatternControls = (value: unknown): DesignPatternControls => {
+  const source = isRecord(value) ? value : {};
+  return {
+    scale: clampNumber(safeNumber(typeof source.scale === "number" ? source.scale : NaN, 1), 0.05, 20),
+    offsetX: clampNumber(safeNumber(typeof source.offsetX === "number" ? source.offsetX : NaN, 0), -500, 500),
+    offsetY: clampNumber(safeNumber(typeof source.offsetY === "number" ? source.offsetY : NaN, 0), -500, 500),
+    rotationDeg: clampNumber(
+      safeNumber(typeof source.rotationDeg === "number" ? source.rotationDeg : NaN, 0),
+      -360,
+      360
+    ),
+    repeatX: clampNumber(safeNumber(typeof source.repeatX === "number" ? source.repeatX : NaN, 1), 0.05, 20),
+    repeatY: clampNumber(safeNumber(typeof source.repeatY === "number" ? source.repeatY : NaN, 1), 0.05, 20),
+    mirrorRepeat: Boolean(source.mirrorRepeat),
+  };
+};
+
+export const createDesignLayerStyleFromRequest = (request: DesignLayerRequest): DesignLayerStyle => ({
+  fillMode: request.fillMode,
+  solidColor: normalizeHex(request.solidColor),
+  strokeColor: normalizeHex(request.strokeColor),
+  strokeWidth: clampNumber(safeNumber(request.strokeWidth, 0), 0, 20),
+  textureDataUrl: sanitizeTextureDataUrl(request.textureDataUrl),
+  textureFileName: typeof request.textureFileName === "string" ? request.textureFileName.trim() : "",
+  textureWidth: sanitizeTextureDimension(request.textureWidth, 1024),
+  textureHeight: sanitizeTextureDimension(request.textureHeight, 1024),
+  textureAutoCenter: Boolean(request.textureAutoCenter),
+  textureContentBounds: sanitizeTextureContentBounds(request.textureContentBounds),
+  shapePresetId: request.shapePreset.id,
+  patternPresetId: request.patternPreset.id,
+  gradientPresetId: request.gradientPreset.id,
+  patternControls: sanitizeDesignPatternControls(request.patternControls),
+});
+
+export const sanitizeDesignLayerStyle = (value: unknown): DesignLayerStyle | null => {
+  if (!isRecord(value) || !isDesignFillMode(value.fillMode) || typeof value.solidColor !== "string") {
+    return null;
+  }
+
+  const defaultStyle = getDefaultDesignLayerStyle(value.solidColor);
+  const shapePresetId =
+    typeof value.shapePresetId === "string" &&
+    DESIGN_SHAPE_PRESETS.some((preset) => preset.id === value.shapePresetId)
+      ? value.shapePresetId
+      : defaultStyle.shapePresetId;
+  const patternPresetId =
+    typeof value.patternPresetId === "string" &&
+    DESIGN_PATTERN_PRESETS.some((preset) => preset.id === value.patternPresetId)
+      ? value.patternPresetId
+      : defaultStyle.patternPresetId;
+  const gradientPresetId =
+    typeof value.gradientPresetId === "string" &&
+    DESIGN_GRADIENT_PRESETS.some((preset) => preset.id === value.gradientPresetId)
+      ? value.gradientPresetId
+      : defaultStyle.gradientPresetId;
+
+  return {
+    fillMode: value.fillMode,
+    solidColor: normalizeHex(value.solidColor),
+    strokeColor: normalizeHex(typeof value.strokeColor === "string" ? value.strokeColor : "#ffffff"),
+    strokeWidth: clampNumber(
+      safeNumber(typeof value.strokeWidth === "number" ? value.strokeWidth : NaN, 0),
+      0,
+      20
+    ),
+    textureDataUrl: sanitizeTextureDataUrl(value.textureDataUrl),
+    textureFileName: typeof value.textureFileName === "string" ? value.textureFileName.trim() : "",
+    textureWidth: sanitizeTextureDimension(value.textureWidth, 1024),
+    textureHeight: sanitizeTextureDimension(value.textureHeight, 1024),
+    textureAutoCenter: Boolean(value.textureAutoCenter),
+    textureContentBounds: sanitizeTextureContentBounds(value.textureContentBounds),
+    shapePresetId,
+    patternPresetId,
+    gradientPresetId,
+    patternControls: sanitizeDesignPatternControls(value.patternControls),
+  };
+};
+
+export const serializeDesignLayerStyle = (style: DesignLayerStyle | null | undefined) =>
+  style
+    ? JSON.stringify({
+        fillMode: style.fillMode,
+        solidColor: normalizeHex(style.solidColor),
+        strokeColor: normalizeHex(style.strokeColor || "#ffffff"),
+        strokeWidth: clampNumber(safeNumber(style.strokeWidth, 0), 0, 20),
+        textureDataUrl: serializeTextureDataUrl(style.textureDataUrl || ""),
+        textureFileName: style.textureFileName || "",
+        textureWidth: sanitizeTextureDimension(style.textureWidth, 1024),
+        textureHeight: sanitizeTextureDimension(style.textureHeight, 1024),
+        textureAutoCenter: Boolean(style.textureAutoCenter),
+        textureContentBounds: sanitizeTextureContentBounds(style.textureContentBounds),
+        shapePresetId: style.shapePresetId,
+        patternPresetId: style.patternPresetId,
+        gradientPresetId: style.gradientPresetId,
+        patternControls: sanitizeDesignPatternControls(style.patternControls),
+      })
+    : "";
+
+export const resolveDesignLayerRequest = (style: DesignLayerStyle): DesignLayerRequest => {
+  const normalizedStyle = sanitizeDesignLayerStyle(style) || getDefaultDesignLayerStyle(style.solidColor);
+  return {
+    fillMode: normalizedStyle.fillMode,
+    solidColor: normalizedStyle.solidColor,
+    strokeColor: normalizedStyle.strokeColor,
+    strokeWidth: normalizedStyle.strokeWidth,
+    textureDataUrl: normalizedStyle.textureDataUrl,
+    textureFileName: normalizedStyle.textureFileName,
+    textureWidth: normalizedStyle.textureWidth,
+    textureHeight: normalizedStyle.textureHeight,
+    textureAutoCenter: normalizedStyle.textureAutoCenter,
+    textureContentBounds: normalizedStyle.textureContentBounds,
+    shapePreset:
+      DESIGN_SHAPE_PRESETS.find((preset) => preset.id === normalizedStyle.shapePresetId) || DESIGN_SHAPE_PRESETS[0]!,
+    patternPreset:
+      DESIGN_PATTERN_PRESETS.find((preset) => preset.id === normalizedStyle.patternPresetId) ||
+      DESIGN_PATTERN_PRESETS[0]!,
+    gradientPreset:
+      DESIGN_GRADIENT_PRESETS.find((preset) => preset.id === normalizedStyle.gradientPresetId) ||
+      DESIGN_GRADIENT_PRESETS[0]!,
+    patternControls: normalizedStyle.patternControls,
+  };
+};
+
+const renderPatternDefinitionWithControls = (
+  presetOrDefinition: Pick<DesignPatternPreset, "renderDefinition"> | string,
+  fillId: string,
+  controls: DesignPatternControls,
+  options?: {
+    centerWithinViewBox?: boolean;
+    viewBoxWidth?: number;
+    viewBoxHeight?: number;
+    ignoreManualOffset?: boolean;
+    rotateAroundCenter?: boolean;
+  }
+) => {
+  const rawDefinition =
+    typeof presetOrDefinition === "string" ? presetOrDefinition : presetOrDefinition.renderDefinition(fillId);
+  const match = rawDefinition.match(PATTERN_DEFINITION_REGEX);
+  if (!match) {
+    return rawDefinition;
+  }
+
+  const [, attributes, content] = match;
+  const baseWidth = Math.max(
+    0.1,
+    safeNumber(Number.parseFloat(readSvgAttribute(attributes, "width") || ""), 24)
+  );
+  const baseHeight = Math.max(
+    0.1,
+    safeNumber(Number.parseFloat(readSvgAttribute(attributes, "height") || ""), 24)
+  );
+  const baseTransform = readSvgAttribute(attributes, "patternTransform");
+  const scale = clampNumber(safeNumber(controls.scale, 1), 0.05, 20);
+  const repeatX = clampNumber(safeNumber(controls.repeatX, 1), 0.05, 20);
+  const repeatY = clampNumber(safeNumber(controls.repeatY, 1), 0.05, 20);
+  const rotationDeg = clampNumber(safeNumber(controls.rotationDeg, 0), -360, 360);
+  const tileWidth = Math.max(0.1, (baseWidth * scale) / repeatX);
+  const tileHeight = Math.max(0.1, (baseHeight * scale) / repeatY);
+  const manualOffsetX = options?.ignoreManualOffset ? 0 : clampNumber(safeNumber(controls.offsetX, 0), -500, 500);
+  const manualOffsetY = options?.ignoreManualOffset ? 0 : clampNumber(safeNumber(controls.offsetY, 0), -500, 500);
+  const offsetX = (manualOffsetX / 100) * tileWidth;
+  const offsetY = (manualOffsetY / 100) * tileHeight;
+  const patternWidth = tileWidth * (controls.mirrorRepeat ? 2 : 1);
+  const patternHeight = tileHeight * (controls.mirrorRepeat ? 2 : 1);
+  const viewBoxWidth = options?.viewBoxWidth ?? 100;
+  const viewBoxHeight = options?.viewBoxHeight ?? 100;
+  const baseOriginX =
+    options?.centerWithinViewBox
+      ? (viewBoxWidth - patternWidth) / 2
+      : 0;
+  const baseOriginY =
+    options?.centerWithinViewBox
+      ? (viewBoxHeight - patternHeight) / 2
+      : 0;
+  const contentScaleX = tileWidth / baseWidth;
+  const contentScaleY = tileHeight / baseHeight;
+  const rotationCenterX = options?.rotateAroundCenter ? viewBoxWidth / 2 : 0;
+  const rotationCenterY = options?.rotateAroundCenter ? viewBoxHeight / 2 : 0;
+  const transformParts = [
+    baseTransform,
+    Math.abs(rotationDeg) > 0.0001
+      ? options?.rotateAroundCenter
+        ? `rotate(${formatSvgNumber(rotationDeg)} ${formatSvgNumber(rotationCenterX)} ${formatSvgNumber(rotationCenterY)})`
+        : `rotate(${formatSvgNumber(rotationDeg)})`
+      : null,
+  ].filter(Boolean);
+  const baseTile = `<g transform="scale(${formatSvgNumber(contentScaleX)} ${formatSvgNumber(contentScaleY)})">${content}</g>`;
+  const mirroredTiles = controls.mirrorRepeat
+    ? `
+        <g transform="translate(${formatSvgNumber(tileWidth * 2)} 0) scale(-${formatSvgNumber(contentScaleX)} ${formatSvgNumber(contentScaleY)})">
+          ${content}
+        </g>
+        <g transform="translate(0 ${formatSvgNumber(tileHeight * 2)}) scale(${formatSvgNumber(contentScaleX)} -${formatSvgNumber(contentScaleY)})">
+          ${content}
+        </g>
+        <g transform="translate(${formatSvgNumber(tileWidth * 2)} ${formatSvgNumber(tileHeight * 2)}) scale(-${formatSvgNumber(contentScaleX)} -${formatSvgNumber(contentScaleY)})">
+          ${content}
+        </g>
+      `
+    : "";
+
+  return `
+      <pattern id="${fillId}" x="${formatSvgNumber(baseOriginX + offsetX)}" y="${formatSvgNumber(baseOriginY + offsetY)}" width="${formatSvgNumber(patternWidth)}" height="${formatSvgNumber(patternHeight)}" patternUnits="userSpaceOnUse"${
+        transformParts.length ? ` patternTransform="${transformParts.join(" ")}"` : ""
+      }>
+        ${baseTile}
+        ${mirroredTiles}
+      </pattern>
+    `;
+};
+
+const getTexturePatternBaseSize = (textureWidth: number, textureHeight: number) => {
+  const safeWidth = sanitizeTextureDimension(textureWidth, 1024);
+  const safeHeight = sanitizeTextureDimension(textureHeight, 1024);
+  if (safeWidth >= safeHeight) {
+    return {
+      width: 100,
+      height: (safeHeight / safeWidth) * 100,
+    };
+  }
+  return {
+    width: (safeWidth / safeHeight) * 100,
+    height: 100,
+  };
+};
+
+const renderAutoCenteredTextureDefinition = ({
+  fillId,
+  textureDataUrl,
+  textureWidth,
+  textureHeight,
+  textureContentBounds,
+  scale,
+}: {
+  fillId: string;
+  textureDataUrl: string;
+  textureWidth: number;
+  textureHeight: number;
+  textureContentBounds: DesignTextureContentBounds;
+  scale: number;
+}) => {
+  const safeTextureWidth = sanitizeTextureDimension(textureWidth, 1024);
+  const safeTextureHeight = sanitizeTextureDimension(textureHeight, 1024);
+  const contentBounds = sanitizeTextureContentBounds(textureContentBounds);
+  const croppedWidth = safeTextureWidth * contentBounds.width;
+  const croppedHeight = safeTextureHeight * contentBounds.height;
+  const baseSize = getTexturePatternBaseSize(croppedWidth, croppedHeight);
+  const zoom = clampNumber(safeNumber(scale, 1), 0.05, 20);
+  const visibleWidth = baseSize.width * zoom;
+  const visibleHeight = baseSize.height * zoom;
+  const scaleX = visibleWidth / Math.max(croppedWidth, 0.0001);
+  const scaleY = visibleHeight / Math.max(croppedHeight, 0.0001);
+  const imageWidth = safeTextureWidth * scaleX;
+  const imageHeight = safeTextureHeight * scaleY;
+  const imageX = (100 - visibleWidth) / 2 - contentBounds.left * imageWidth;
+  const imageY = (100 - visibleHeight) / 2 - contentBounds.top * imageHeight;
+
+  return `
+      <pattern id="${fillId}" x="0" y="0" width="100" height="100" patternUnits="userSpaceOnUse">
+        <image
+          href="${textureDataUrl}"
+          x="${formatSvgNumber(imageX)}"
+          y="${formatSvgNumber(imageY)}"
+          width="${formatSvgNumber(imageWidth)}"
+          height="${formatSvgNumber(imageHeight)}"
+          preserveAspectRatio="none"
+        />
+      </pattern>
+    `;
+};
+
+const renderTextureDefinitionWithControls = ({
+  fillId,
+  textureDataUrl,
+  textureWidth,
+  textureHeight,
+  textureAutoCenter,
+  textureContentBounds,
+  controls,
+}: {
+  fillId: string;
+  textureDataUrl: string;
+  textureWidth: number;
+  textureHeight: number;
+  textureAutoCenter: boolean;
+  textureContentBounds: DesignTextureContentBounds;
+  controls: DesignPatternControls;
+}) => {
+  if (textureAutoCenter) {
+    return renderAutoCenteredTextureDefinition({
+      fillId,
+      textureDataUrl,
+      textureWidth,
+      textureHeight,
+      textureContentBounds,
+      scale: controls.scale,
+    });
+  }
+
+  const contentBounds = sanitizeTextureContentBounds(textureContentBounds);
+  const effectiveWidth = textureWidth * contentBounds.width;
+  const effectiveHeight = textureHeight * contentBounds.height;
+  const baseSize = getTexturePatternBaseSize(effectiveWidth, effectiveHeight);
+  const scaleX = baseSize.width / Math.max(1, effectiveWidth);
+  const scaleY = baseSize.height / Math.max(1, effectiveHeight);
+  const translateX = -(contentBounds.left * textureWidth * scaleX);
+  const translateY = -(contentBounds.top * textureHeight * scaleY);
+  const imageMarkup = `
+      <g transform="translate(${formatSvgNumber(translateX)} ${formatSvgNumber(translateY)}) scale(${formatSvgNumber(scaleX)} ${formatSvgNumber(scaleY)})">
+        <image href="${textureDataUrl}" width="${formatSvgNumber(textureWidth)}" height="${formatSvgNumber(textureHeight)}" preserveAspectRatio="none" />
+      </g>
+    `;
+  return renderPatternDefinitionWithControls(
+    `
+      <pattern id="${fillId}" width="${formatSvgNumber(baseSize.width)}" height="${formatSvgNumber(baseSize.height)}" patternUnits="userSpaceOnUse">
+        ${imageMarkup}
+      </pattern>
+    `,
+    fillId,
+    controls
+  );
+};
+
+const getTextureFileStem = (fileName: string) => {
+  const trimmed = fileName.trim();
+  if (!trimmed) {
+    return "texture";
+  }
+  const withoutExtension = trimmed.replace(/\.[^.]+$/, "");
+  const normalized = withoutExtension
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized || "texture";
+};
+
 const createSolidFill = (solidColor: string) => {
   const baseColor = normalizeHex(solidColor);
   const highlight = mixHex(baseColor, "#ffffff", 0.24);
@@ -192,22 +649,49 @@ const createShapeTextureSvg = (
   shapePreset: Pick<DesignShapePreset, "renderBody">,
   defs: string,
   fill: string,
-  stroke: string
-) =>
-  svgDataUrl(`
+  stroke: string,
+  options?: {
+    strokeColor?: string;
+    strokeWidth?: number;
+  }
+) => {
+  const outlineWidth = clampNumber(safeNumber(options?.strokeWidth ?? 0, 0), 0, 20);
+  const outlineColor = normalizeHex(options?.strokeColor || "#ffffff");
+  const outlineDefs =
+    outlineWidth > 0.001
+      ? `
+        <filter id="shape-outline" x="-60%" y="-60%" width="220%" height="220%">
+          <feMorphology in="SourceAlpha" operator="dilate" radius="${formatSvgNumber(outlineWidth)}" result="outline-alpha" />
+          <feFlood flood-color="${outlineColor}" result="outline-color" />
+          <feComposite in="outline-color" in2="outline-alpha" operator="in" result="outline-fill" />
+          <feComposite in="outline-fill" in2="SourceAlpha" operator="out" result="outline-only" />
+          <feMerge>
+            <feMergeNode in="outline-only" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
+        </filter>
+      `
+      : "";
+  const renderedBody = shapePreset.renderBody(fill, stroke);
+  const body =
+    outlineWidth > 0.001 ? `<g filter="url(#shape-outline)">${renderedBody}</g>` : renderedBody;
+
+  return svgDataUrl(`
     <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 100 100">
       <defs>
         ${defs}
         <filter id="shape-shadow" x="-30%" y="-30%" width="160%" height="160%">
           <feDropShadow dx="0" dy="2.4" stdDeviation="3.4" flood-color="rgba(15, 23, 32, 0.22)" />
         </filter>
+        ${outlineDefs}
       </defs>
       <rect width="100" height="100" fill="transparent" />
       <g filter="url(#shape-shadow)">
-        ${shapePreset.renderBody(fill, stroke)}
+        ${body}
       </g>
     </svg>
   `);
+};
 
 const patternDefinitions: PatternDefinition[] = [
   {
@@ -1659,22 +2143,53 @@ export const DESIGN_SHAPE_PRESETS: DesignShapePreset[] = shapeDefinitions.map((p
 });
 
 export const createGeneratedDesignAsset = ({
-  fillMode,
-  solidColor,
-  shapePreset,
-  patternPreset,
-  gradientPreset,
+  style,
   isRussian,
-}: DesignLayerRequest & { isRussian: boolean }) => {
+}: {
+  style: DesignLayerStyle;
+  isRussian: boolean;
+}) => {
+  const {
+    fillMode,
+    solidColor,
+    strokeColor,
+    strokeWidth,
+    textureDataUrl,
+    textureFileName,
+    textureWidth,
+    textureHeight,
+    textureAutoCenter,
+    textureContentBounds,
+    shapePreset,
+    patternPreset,
+    gradientPreset,
+    patternControls,
+  } = resolveDesignLayerRequest(style);
   const solidFill = createSolidFill(solidColor);
   let defs = solidFill.defs;
   let fill = solidFill.fill;
   let fileSuffix = "solid";
 
   if (fillMode === "pattern") {
-    defs = patternPreset.renderDefinition("shape-fill");
+    defs = renderPatternDefinitionWithControls(
+      patternPreset,
+      "shape-fill",
+      patternControls || DEFAULT_DESIGN_PATTERN_CONTROLS
+    );
     fill = "url(#shape-fill)";
     fileSuffix = patternPreset.fileStem;
+  } else if (fillMode === "texture" && textureDataUrl) {
+    defs = renderTextureDefinitionWithControls({
+      fillId: "shape-fill",
+      textureDataUrl,
+      textureWidth,
+      textureHeight,
+      textureAutoCenter,
+      textureContentBounds,
+      controls: patternControls || DEFAULT_DESIGN_PATTERN_CONTROLS,
+    });
+    fill = "url(#shape-fill)";
+    fileSuffix = getTextureFileStem(textureFileName);
   } else if (fillMode === "gradient") {
     defs = gradientPreset.renderDefinition("shape-fill");
     fill = "url(#shape-fill)";
@@ -1683,7 +2198,10 @@ export const createGeneratedDesignAsset = ({
 
   return {
     fileName: `${isRussian ? "Фигура" : "Shape"} ${shapePreset.name} ${fileSuffix}.svg`,
-    textureUrl: createShapeTextureSvg(shapePreset, defs, fill, solidFill.stroke),
+    textureUrl: createShapeTextureSvg(shapePreset, defs, fill, solidFill.stroke, {
+      strokeColor,
+      strokeWidth,
+    }),
     scale: shapePreset.defaultScale,
   };
 };

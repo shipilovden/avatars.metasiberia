@@ -69,6 +69,7 @@ export const createUvPortDocumentFromLegacyProps = (
           id: entry.id,
           assetId: entry.assetId || null,
           textStyle: entry.textStyle || null,
+          designStyle: entry.designStyle || null,
           kind: "decal",
           name:
             entry.fileName?.trim() ||
@@ -93,6 +94,7 @@ export const createUvPortDocumentFromLegacyProps = (
           id: "draft:current",
           assetId: draftAssetId || null,
           textStyle: null,
+          designStyle: null,
           kind: "draft",
           name: draftFileName?.trim() || (isRussian ? "Черновик" : "Draft layer"),
           meshName: activeSlot,

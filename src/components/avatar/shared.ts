@@ -2,6 +2,7 @@ import assetSchema from "../../config/asset-schema.json";
 import assetDataset from "../../data/assets-catalog.json";
 import localAssetCapabilitiesManifest from "../../data/generated/local-asset-capabilities.json";
 import localLibraryManifest from "../../data/generated/local-library-manifest.json";
+import type { DesignLayerStyle } from "../uv-editor-port/design-presets";
 
 export type SupportedType =
   | "top"
@@ -122,6 +123,7 @@ export type DecalAsset = {
   fileName: string;
   textureUrl: string;
   textStyle?: TextDecalStyle | null;
+  designStyle?: DesignLayerStyle | null;
 };
 
 export const SLOT_NAMES = {
@@ -265,6 +267,7 @@ export type AppliedUvDecal = {
   blendMode: UvLayerBlendMode;
   opacity: number;
   textStyle?: TextDecalStyle | null;
+  designStyle?: DesignLayerStyle | null;
   projection?: DecalProjectionBasis | null;
 };
 

@@ -4,6 +4,8 @@ import { useGLTF } from "@react-three/drei";
 import { Camera, Group, Mesh, Scene, Vector2, Vector3, WebGLRenderer } from "three";
 import type { PaintPanelProps } from "./components/PaintPanel";
 import type { UvDecalEditorProps } from "./components/UvDecalEditor";
+import { sanitizeDesignLayerStyle } from "./components/uv-editor-port/design-presets";
+import type { DesignLayerStyle } from "./components/uv-editor-port/design-presets";
 import { AssetSidebar } from "./components/avatar/AssetSidebar";
 import { StagePanel } from "./components/avatar/StagePanel";
 import {
@@ -321,6 +323,7 @@ const sanitizeDecalAssets = (value: unknown): DecalAsset[] =>
           fileName: entry.fileName,
           textureUrl: entry.textureUrl,
           textStyle: sanitizeTextDecalStyle(entry.textStyle),
+          designStyle: sanitizeDesignLayerStyle(entry.designStyle),
         }))
     : [];
 
@@ -359,6 +362,7 @@ const sanitizeAppliedUvDecals = (value: unknown): AppliedUvDecal[] =>
             ? Math.max(0, Math.min(1, entry.opacity))
             : 1,
           textStyle: sanitizeTextDecalStyle(entry.textStyle),
+          designStyle: sanitizeDesignLayerStyle(entry.designStyle),
           projection: sanitizeDecalProjectionBasis(entry.projection),
         }))
     : [];
@@ -1492,6 +1496,7 @@ function App() {
       blendMode,
       opacity,
       textStyle,
+      designStyle,
       projection,
     }: {
       assetId?: string | null;
@@ -1506,6 +1511,7 @@ function App() {
       blendMode?: UvLayerBlendMode;
       opacity?: number;
       textStyle?: TextDecalStyle | null;
+      designStyle?: DesignLayerStyle | null;
       projection?: DecalProjectionBasis | null;
     }) => {
       const nextLayerId = makeClientId();
@@ -1525,6 +1531,7 @@ function App() {
           blendMode: blendMode || DEFAULT_UV_LAYER_BLEND_MODE,
           opacity: typeof opacity === "number" ? opacity : 1,
           textStyle: textStyle || null,
+          designStyle: designStyle || null,
           projection: projection || null,
         },
       ]);
@@ -1677,6 +1684,7 @@ function App() {
       fileName,
       textureUrl,
       textStyle,
+      designStyle,
       meshName,
       uv,
       scale,
@@ -1690,6 +1698,7 @@ function App() {
       fileName: string;
       textureUrl: string;
       textStyle?: TextDecalStyle | null;
+      designStyle?: DesignLayerStyle | null;
       meshName?: string;
       uv?: [number, number];
       scale?: number;
@@ -1714,6 +1723,7 @@ function App() {
         fileName,
         textureUrl,
         textStyle: textStyle || null,
+        designStyle: designStyle || null,
       };
       const nextScale =
         typeof scale === "number"
@@ -1736,6 +1746,7 @@ function App() {
         blendMode: nextBlendMode,
         opacity: typeof opacity === "number" ? opacity : 1,
         textStyle: nextAsset.textStyle,
+        designStyle: nextAsset.designStyle,
         projection: nextProjection,
       });
 
@@ -1782,6 +1793,7 @@ function App() {
       blendMode,
       opacity,
       textStyle,
+      designStyle,
       projection,
     }: {
       assetId?: string | null;
@@ -1796,6 +1808,7 @@ function App() {
       blendMode?: UvLayerBlendMode;
       opacity?: number;
       textStyle?: TextDecalStyle | null;
+      designStyle?: DesignLayerStyle | null;
       projection?: DecalProjectionBasis | null;
     }) => {
       const nextLayerId = appendAppliedDecalLayer({
@@ -1811,6 +1824,7 @@ function App() {
         blendMode,
         opacity,
         textStyle,
+        designStyle,
         projection,
       });
 
@@ -1839,6 +1853,7 @@ function App() {
           blendMode: UvLayerBlendMode;
           opacity: number;
           textStyle: TextDecalStyle | null;
+          designStyle: DesignLayerStyle | null;
         }>
     ) => {
       let assetIdToUpdate: string | null = null;
@@ -1866,6 +1881,7 @@ function App() {
             ...(patch.blendMode ? { blendMode: patch.blendMode } : {}),
             ...(typeof patch.opacity === "number" ? { opacity: patch.opacity } : {}),
             ...("textStyle" in patch ? { textStyle: patch.textStyle || null } : {}),
+            ...("designStyle" in patch ? { designStyle: patch.designStyle || null } : {}),
           };
         })
       );
@@ -1878,6 +1894,7 @@ function App() {
                   ...(typeof patch.fileName === "string" ? { fileName: patch.fileName } : {}),
                   ...(typeof patch.textureUrl === "string" ? { textureUrl: patch.textureUrl } : {}),
                   ...("textStyle" in patch ? { textStyle: patch.textStyle || null } : {}),
+                  ...("designStyle" in patch ? { designStyle: patch.designStyle || null } : {}),
                 }
               : asset
           )
@@ -2106,6 +2123,7 @@ function App() {
           assetId: selectedDecalAsset?.id || "draft-preview:decal",
           fileName: selectedDecalAsset?.fileName || "draft-preview",
           textStyle: selectedDecalAsset?.textStyle || null,
+          designStyle: selectedDecalAsset?.designStyle || null,
           ...candidate,
         });
       }
@@ -2688,6 +2706,7 @@ function App() {
         blendMode: draftDecalBlendMode,
         opacity: draftDecalOpacity,
         textStyle: selectedDecalAsset.textStyle || null,
+        designStyle: selectedDecalAsset.designStyle || null,
         projection: decalProjectionBasis,
       });
     },
@@ -2715,6 +2734,7 @@ function App() {
             ? layer.blendMode
             : DEFAULT_UV_LAYER_BLEND_MODE,
           opacity: isFiniteNumber(layer.opacity) ? Math.max(0, Math.min(1, layer.opacity)) : 1,
+          designStyle: sanitizeDesignLayerStyle(layer.designStyle),
         }))
       ),
     onUpdateAppliedLayer: updateAppliedDecalLayer,

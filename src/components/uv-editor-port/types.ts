@@ -3,6 +3,7 @@ import type {
   TextDecalStyle,
   UvLayerBlendMode,
 } from "../avatar/shared";
+import type { DesignLayerStyle } from "./design-presets";
 
 export type UvPortTool = "transform" | "crop" | "brush" | "eraser" | "eyedropper" | "fill";
 
@@ -18,6 +19,7 @@ export type UvPortLayer = {
   id: string;
   assetId?: string | null;
   textStyle?: TextDecalStyle | null;
+  designStyle?: DesignLayerStyle | null;
   projection?: DecalProjectionBasis | null;
   kind: UvPortLayerKind;
   name: string;

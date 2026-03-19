@@ -6,6 +6,7 @@ import type {
   TextDecalStyle,
   UvLayerBlendMode,
 } from "./avatar/shared";
+import type { DesignLayerStyle } from "./uv-editor-port/design-presets";
 
 type Copy = {
   uvEditorTitle: string;
@@ -37,6 +38,7 @@ type AppliedUvDecal = {
   blendMode: UvLayerBlendMode;
   opacity: number;
   textStyle?: TextDecalStyle | null;
+  designStyle?: DesignLayerStyle | null;
   projection?: DecalProjectionBasis | null;
 };
 
@@ -73,6 +75,7 @@ export type UvDecalEditorProps = {
     fileName: string;
     textureUrl: string;
     textStyle?: TextDecalStyle | null;
+    designStyle?: DesignLayerStyle | null;
     meshName?: string;
     uv?: [number, number];
     scale?: number;
@@ -99,6 +102,7 @@ export type UvDecalEditorProps = {
     blendMode?: UvLayerBlendMode;
     opacity?: number;
     textStyle?: TextDecalStyle | null;
+    designStyle?: DesignLayerStyle | null;
     projection?: DecalProjectionBasis | null;
   }) => string | null;
   onBaseLayerPreviewChange?: (slot: string, textureUrl: string | null) => void;
@@ -124,6 +128,7 @@ export type UvDecalEditorProps = {
       blendMode: UvLayerBlendMode;
       opacity: number;
       textStyle: TextDecalStyle | null;
+      designStyle: DesignLayerStyle | null;
     }>
   ) => void;
   onMoveAppliedLayer?: (layerId: string, direction: "up" | "down") => void;

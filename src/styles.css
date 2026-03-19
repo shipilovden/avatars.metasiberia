@@ -1734,6 +1734,36 @@ body {
   accent-color: var(--uv-active-border);
 }
 
+.uv-editor__number-input {
+  min-width: 0;
+  display: inline-grid;
+  grid-template-columns: minmax(0, auto) auto;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  min-height: 30px;
+  border: 1px solid var(--uv-surface-border);
+  border-radius: 999px;
+  background: #ffffff;
+}
+
+.uv-editor__slider-number {
+  width: 64px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--uv-text);
+  outline: none;
+}
+
+.uv-editor__number-suffix {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--uv-text-muted);
+}
+
 .uv-editor__brush-color {
   width: 32px;
   height: 22px;
@@ -1979,6 +2009,29 @@ body {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+}
+
+.uv-editor__design-upload-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.uv-editor__design-upload-preview {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.uv-editor__design-upload-name {
+  min-width: 0;
+  justify-content: flex-start;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .uv-editor__design-grid--compact {
