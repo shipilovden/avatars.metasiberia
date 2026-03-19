@@ -15,11 +15,13 @@ import {
 } from "./components/avatar/export-utils";
 import {
   datasetAssets,
+  DEFAULT_UV_LAYER_BLEND_MODE,
   FACIAL_FEATURE_TYPES,
   getCanonicalMeshSlot,
   getAppliedUvDecalsForMesh,
   groups,
   HAIR_COLOR_SWATCHES,
+  isUvLayerBlendMode,
   IDLE_ANIMATION_URL,
   localAssetCapabilities,
   localLibrary,
@@ -41,6 +43,7 @@ import type {
   StickerTransform,
   SupportedType,
   TextDecalStyle,
+  UvLayerBlendMode,
   UiGender,
   UiLocale,
 } from "./components/avatar/shared";
@@ -119,11 +122,35 @@ const getInitialDecalScale = ({
 };
 
 const isSameUvPlacement = (
-  left: Pick<AppliedUvDecal, "meshName" | "textureUrl" | "uv" | "scale" | "scaleX" | "scaleY" | "rotationDeg">,
-  right: Pick<AppliedUvDecal, "meshName" | "textureUrl" | "uv" | "scale" | "scaleX" | "scaleY" | "rotationDeg">
+  left: Pick<
+    AppliedUvDecal,
+    | "meshName"
+    | "textureUrl"
+    | "blendMode"
+    | "opacity"
+    | "uv"
+    | "scale"
+    | "scaleX"
+    | "scaleY"
+    | "rotationDeg"
+  >,
+  right: Pick<
+    AppliedUvDecal,
+    | "meshName"
+    | "textureUrl"
+    | "blendMode"
+    | "opacity"
+    | "uv"
+    | "scale"
+    | "scaleX"
+    | "scaleY"
+    | "rotationDeg"
+  >
 ) =>
   left.meshName === right.meshName &&
   left.textureUrl === right.textureUrl &&
+  left.blendMode === right.blendMode &&
+  left.opacity === right.opacity &&
   left.uv[0] === right.uv[0] &&
   left.uv[1] === right.uv[1] &&
   left.scale === right.scale &&
@@ -188,6 +215,8 @@ type AvatarSessionState = {
   replaceTextureUrlState: string | null;
   replaceFileName: string;
   isStickerEditMode: boolean;
+  draftDecalOpacity: number;
+  draftDecalBlendMode: UvLayerBlendMode;
   uvDecalDraftUv: [number, number];
   uvDecalSlot: MeshSlot | null;
   appliedUvDecals: AppliedUvDecal[];
@@ -323,6 +352,12 @@ const sanitizeAppliedUvDecals = (value: unknown): AppliedUvDecal[] =>
           scaleY: entry.scaleY,
           rotationDeg: entry.rotationDeg,
           textureUrl: entry.textureUrl,
+          blendMode: isUvLayerBlendMode(entry.blendMode)
+            ? entry.blendMode
+            : DEFAULT_UV_LAYER_BLEND_MODE,
+          opacity: isFiniteNumber(entry.opacity)
+            ? Math.max(0, Math.min(1, entry.opacity))
+            : 1,
           textStyle: sanitizeTextDecalStyle(entry.textStyle),
           projection: sanitizeDecalProjectionBasis(entry.projection),
         }))
@@ -467,6 +502,12 @@ const readAvatarSession = (): Partial<AvatarSessionState> | null => {
     if (typeof parsed.isStickerEditMode === "boolean") {
       next.isStickerEditMode = parsed.isStickerEditMode;
     }
+    if (isFiniteNumber(parsed.draftDecalOpacity)) {
+      next.draftDecalOpacity = Math.max(0, Math.min(1, parsed.draftDecalOpacity));
+    }
+    if (isUvLayerBlendMode(parsed.draftDecalBlendMode)) {
+      next.draftDecalBlendMode = parsed.draftDecalBlendMode;
+    }
     if (isTuple2(parsed.uvDecalDraftUv)) {
       next.uvDecalDraftUv = [parsed.uvDecalDraftUv[0], parsed.uvDecalDraftUv[1]];
     }
@@ -574,6 +615,12 @@ function App() {
   );
   const [isStickerEditMode, setIsStickerEditMode] = useState(
     restoredSession?.isStickerEditMode ?? false
+  );
+  const [draftDecalOpacity, setDraftDecalOpacity] = useState(
+    restoredSession?.draftDecalOpacity ?? 1
+  );
+  const [draftDecalBlendMode, setDraftDecalBlendMode] = useState<UvLayerBlendMode>(
+    restoredSession?.draftDecalBlendMode ?? DEFAULT_UV_LAYER_BLEND_MODE
   );
   const [isStickerDragging, setIsStickerDragging] = useState(false);
   const [isAvatarStatic, setIsAvatarStatic] = useState(
@@ -686,6 +733,8 @@ function App() {
       replaceTextureUrlState,
       replaceFileName,
       isStickerEditMode,
+      draftDecalOpacity,
+      draftDecalBlendMode,
       uvDecalDraftUv,
       uvDecalSlot,
       appliedUvDecals,
@@ -713,6 +762,8 @@ function App() {
       appliedUvTextures,
       decalAssets,
       decalTransform,
+      draftDecalBlendMode,
+      draftDecalOpacity,
       draftDecalTextureUrlState,
       isAvatarStatic,
       isPaintPanelOpen,
@@ -851,6 +902,8 @@ function App() {
     setPaintedBasePreviewBySlot({});
     setPaintedBaseFileNameBySlot({});
     setDraftDecalTextureUrlState(undefined);
+    setDraftDecalOpacity(1);
+    setDraftDecalBlendMode(DEFAULT_UV_LAYER_BLEND_MODE);
     setReplaceTextureUrlState(null);
     setReplaceFileName("");
     setUvEditorMode(null);
@@ -1436,6 +1489,8 @@ function App() {
       scaleX,
       scaleY,
       rotationDeg,
+      blendMode,
+      opacity,
       textStyle,
       projection,
     }: {
@@ -1448,6 +1503,8 @@ function App() {
       scaleX: number;
       scaleY: number;
       rotationDeg: number;
+      blendMode?: UvLayerBlendMode;
+      opacity?: number;
       textStyle?: TextDecalStyle | null;
       projection?: DecalProjectionBasis | null;
     }) => {
@@ -1465,6 +1522,8 @@ function App() {
           scaleY,
           rotationDeg,
           textureUrl,
+          blendMode: blendMode || DEFAULT_UV_LAYER_BLEND_MODE,
+          opacity: typeof opacity === "number" ? opacity : 1,
           textStyle: textStyle || null,
           projection: projection || null,
         },
@@ -1513,6 +1572,7 @@ function App() {
           scaleX: 1,
           scaleY: 1,
           rotationDeg: 0,
+          blendMode: DEFAULT_UV_LAYER_BLEND_MODE,
           projection: nextProjection,
         });
         setUvDecalDraftUv(nextUv);
@@ -1550,6 +1610,8 @@ function App() {
             scaleY: 1,
             rotationDeg: 0,
             textureUrl: result,
+            blendMode: DEFAULT_UV_LAYER_BLEND_MODE,
+            opacity: 1,
           },
         ]);
         setPaintedBasePreviewBySlot((current) => {
@@ -1621,6 +1683,8 @@ function App() {
       scaleX,
       scaleY,
       rotationDeg,
+      blendMode,
+      opacity,
       projection,
     }: {
       fileName: string;
@@ -1632,6 +1696,8 @@ function App() {
       scaleX?: number;
       scaleY?: number;
       rotationDeg?: number;
+      blendMode?: UvLayerBlendMode;
+      opacity?: number;
       projection?: DecalProjectionBasis | null;
     }) => {
       const fallbackSlot = uvDecalSlot || TYPE_TO_PREFERRED_UV_SLOT[activeType] || SLOT_NAMES.top;
@@ -1656,6 +1722,7 @@ function App() {
       const nextScaleX = typeof scaleX === "number" ? scaleX : 1;
       const nextScaleY = typeof scaleY === "number" ? scaleY : 1;
       const nextRotationDeg = typeof rotationDeg === "number" ? rotationDeg : 0;
+      const nextBlendMode = blendMode || DEFAULT_UV_LAYER_BLEND_MODE;
       const nextLayerId = appendAppliedDecalLayer({
         assetId: nextAsset.id,
         fileName: nextAsset.fileName,
@@ -1666,6 +1733,8 @@ function App() {
         scaleX: nextScaleX,
         scaleY: nextScaleY,
         rotationDeg: nextRotationDeg,
+        blendMode: nextBlendMode,
+        opacity: typeof opacity === "number" ? opacity : 1,
         textStyle: nextAsset.textStyle,
         projection: nextProjection,
       });
@@ -1710,6 +1779,8 @@ function App() {
       scaleX,
       scaleY,
       rotationDeg,
+      blendMode,
+      opacity,
       textStyle,
       projection,
     }: {
@@ -1722,6 +1793,8 @@ function App() {
       scaleX: number;
       scaleY: number;
       rotationDeg: number;
+      blendMode?: UvLayerBlendMode;
+      opacity?: number;
       textStyle?: TextDecalStyle | null;
       projection?: DecalProjectionBasis | null;
     }) => {
@@ -1735,6 +1808,8 @@ function App() {
         scaleX,
         scaleY,
         rotationDeg,
+        blendMode,
+        opacity,
         textStyle,
         projection,
       });
@@ -1761,6 +1836,8 @@ function App() {
           scaleX: number;
           scaleY: number;
           rotationDeg: number;
+          blendMode: UvLayerBlendMode;
+          opacity: number;
           textStyle: TextDecalStyle | null;
         }>
     ) => {
@@ -1786,6 +1863,8 @@ function App() {
             ...(typeof patch.scaleX === "number" ? { scaleX: patch.scaleX } : {}),
             ...(typeof patch.scaleY === "number" ? { scaleY: patch.scaleY } : {}),
             ...(typeof patch.rotationDeg === "number" ? { rotationDeg: patch.rotationDeg } : {}),
+            ...(patch.blendMode ? { blendMode: patch.blendMode } : {}),
+            ...(typeof patch.opacity === "number" ? { opacity: patch.opacity } : {}),
             ...("textStyle" in patch ? { textStyle: patch.textStyle || null } : {}),
           };
         })
@@ -1844,6 +1923,8 @@ function App() {
         scaleX: number;
         scaleY: number;
         rotationDeg: number;
+        blendMode: UvLayerBlendMode;
+        opacity: number;
       }>
     ) => {
       setAppliedUvTextures((current) =>
@@ -1859,6 +1940,8 @@ function App() {
                 ...(typeof patch.scaleX === "number" ? { scaleX: patch.scaleX } : {}),
                 ...(typeof patch.scaleY === "number" ? { scaleY: patch.scaleY } : {}),
                 ...(typeof patch.rotationDeg === "number" ? { rotationDeg: patch.rotationDeg } : {}),
+                ...(patch.blendMode ? { blendMode: patch.blendMode } : {}),
+                ...(typeof patch.opacity === "number" ? { opacity: patch.opacity } : {}),
               }
         )
       );
@@ -2007,6 +2090,8 @@ function App() {
       const candidate = {
         meshName: uvDecalSlot,
         textureUrl: decalTextureUrl,
+        blendMode: draftDecalBlendMode,
+        opacity: draftDecalOpacity,
         uv: uvDecalDraftUv,
         scale: decalTransform.scale,
         scaleX: decalTransform.scaleX,
@@ -2030,6 +2115,8 @@ function App() {
   }, [
     appliedUvDecals,
     decalTextureUrl,
+    draftDecalBlendMode,
+    draftDecalOpacity,
     decalProjectionBasis,
     decalTransform.rotationDeg,
     decalTransform.scale,
@@ -2528,6 +2615,8 @@ function App() {
     scaleX: decalTransform.scaleX,
     scaleY: decalTransform.scaleY,
     rotationDeg: decalTransform.rotationDeg,
+    draftOpacity: draftDecalOpacity,
+    draftBlendMode: draftDecalBlendMode,
     onDraftUvChange: (value) => {
       pendingPickedDecalProjectionRef.current = null;
       setDecalProjectionBasis(null);
@@ -2559,6 +2648,8 @@ function App() {
         setStickerTargetMesh(null);
       }
     },
+    onDraftOpacityChange: setDraftDecalOpacity,
+    onDraftBlendModeChange: setDraftDecalBlendMode,
     onScaleChange: (value) =>
       setDecalTransform((current) => ({
         ...current,
@@ -2594,6 +2685,8 @@ function App() {
         scaleY: decalTransform.scaleY,
         rotationDeg: decalTransform.rotationDeg,
         textureUrl: decalTextureUrl,
+        blendMode: draftDecalBlendMode,
+        opacity: draftDecalOpacity,
         textStyle: selectedDecalAsset.textStyle || null,
         projection: decalProjectionBasis,
       });
@@ -2618,6 +2711,10 @@ function App() {
         layers.map((layer) => ({
           ...layer,
           meshName: layer.meshName as MeshSlot,
+          blendMode: isUvLayerBlendMode(layer.blendMode)
+            ? layer.blendMode
+            : DEFAULT_UV_LAYER_BLEND_MODE,
+          opacity: isFiniteNumber(layer.opacity) ? Math.max(0, Math.min(1, layer.opacity)) : 1,
         }))
       ),
     onUpdateAppliedLayer: updateAppliedDecalLayer,
@@ -2737,6 +2834,10 @@ function App() {
         layers.map((layer) => ({
           ...layer,
           meshName: layer.meshName as MeshSlot,
+          blendMode: isUvLayerBlendMode(layer.blendMode)
+            ? layer.blendMode
+            : DEFAULT_UV_LAYER_BLEND_MODE,
+          opacity: isFiniteNumber(layer.opacity) ? Math.max(0, Math.min(1, layer.opacity)) : 1,
         }))
       ),
     onUpdateAppliedLayer: updateAppliedTextureLayer,

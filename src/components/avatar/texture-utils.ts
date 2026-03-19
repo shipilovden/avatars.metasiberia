@@ -7,7 +7,14 @@ import {
   Vector2,
   Vector3,
 } from "three";
-import type { AppliedUvDecal, DecalProjectionBasis } from "./shared";
+import {
+  getCanvasCompositeOperationForUvBlendMode,
+} from "./shared";
+import type {
+  AppliedUvDecal,
+  DecalProjectionBasis,
+  UvLayerBlendMode,
+} from "./shared";
 
 const MIN_DECAL_BAKE_RESOLUTION = 1024;
 
@@ -65,6 +72,7 @@ export const drawReplacementPatternFromImage = ({
   scaleX,
   scaleY,
   rotationDeg,
+  opacity = 1,
 }: {
   canvas: HTMLCanvasElement;
   image: CanvasImageSource;
@@ -73,13 +81,13 @@ export const drawReplacementPatternFromImage = ({
   scaleX: number;
   scaleY: number;
   rotationDeg: number;
+  opacity?: number;
 }) => {
   const context = canvas.getContext("2d");
   if (!context) {
     throw new Error("Canvas 2D context is unavailable.");
   }
 
-  context.clearRect(0, 0, canvas.width, canvas.height);
   const uniform = Math.max(0.2, scale);
   const nextScaleX = Math.max(0.2, scaleX);
   const nextScaleY = Math.max(0.2, scaleY);
@@ -110,7 +118,8 @@ export const drawReplacementPatternFromImage = ({
 
   sourceContext.drawImage(image, 0, 0, sourceCanvas.width, sourceCanvas.height);
   const sourcePixels = sourceContext.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
-  const output = context.createImageData(canvas.width, canvas.height);
+  const output = context.getImageData(0, 0, canvas.width, canvas.height);
+  const resolvedOpacity = Math.max(0, Math.min(1, opacity));
 
   for (let y = 0; y < canvas.height; y += 1) {
     const v = (y + 0.5) / canvas.height;
@@ -136,10 +145,26 @@ export const drawReplacementPatternFromImage = ({
 
       const sourceIndex = (sampleY * sourceCanvas.width + sampleX) * 4;
       const targetIndex = (y * canvas.width + x) * 4;
-      output.data[targetIndex] = sourcePixels.data[sourceIndex];
-      output.data[targetIndex + 1] = sourcePixels.data[sourceIndex + 1];
-      output.data[targetIndex + 2] = sourcePixels.data[sourceIndex + 2];
-      output.data[targetIndex + 3] = sourcePixels.data[sourceIndex + 3];
+      const sourceAlpha = (sourcePixels.data[sourceIndex + 3] / 255) * resolvedOpacity;
+      if (sourceAlpha <= 0) {
+        continue;
+      }
+
+      const backdropAlpha = output.data[targetIndex + 3] / 255;
+      const outputAlpha = sourceAlpha + backdropAlpha * (1 - sourceAlpha);
+      if (outputAlpha <= 0) {
+        continue;
+      }
+
+      for (let channelOffset = 0; channelOffset < 3; channelOffset += 1) {
+        const sourceValue = sourcePixels.data[sourceIndex + channelOffset] / 255;
+        const backdropValue = output.data[targetIndex + channelOffset] / 255;
+        const composited =
+          sourceValue * sourceAlpha + backdropValue * backdropAlpha * (1 - sourceAlpha);
+        output.data[targetIndex + channelOffset] = Math.round((composited / outputAlpha) * 255);
+      }
+
+      output.data[targetIndex + 3] = Math.round(outputAlpha * 255);
     }
   }
 
@@ -154,6 +179,8 @@ export const drawUvDecalOverlayToCanvas = ({
   scaleX,
   scaleY,
   rotationDeg,
+  blendMode,
+  opacity = 1,
 }: {
   canvas: HTMLCanvasElement;
   decalImage: CanvasImageSource;
@@ -162,6 +189,8 @@ export const drawUvDecalOverlayToCanvas = ({
   scaleX: number;
   scaleY: number;
   rotationDeg: number;
+  blendMode?: UvLayerBlendMode;
+  opacity?: number;
 }) => {
   const context = canvas.getContext("2d");
   if (!context) {
@@ -180,6 +209,10 @@ export const drawUvDecalOverlayToCanvas = ({
   const height = Math.max(2, canvas.height * heightUv);
 
   context.save();
+  context.globalAlpha = Math.max(0, Math.min(1, opacity));
+  context.globalCompositeOperation = getCanvasCompositeOperationForUvBlendMode(
+    blendMode || "normal"
+  );
   context.translate(centerX, centerY);
   context.rotate((-rotationDeg * Math.PI) / 180);
   context.drawImage(decalImage, -width / 2, -height / 2, width, height);
@@ -220,6 +253,92 @@ const getSourceImageData = (image: CanvasImageSource) => {
 
   sourceContext.drawImage(image, 0, 0, width, height);
   return sourceContext.getImageData(0, 0, width, height);
+};
+
+const blendChannel = (
+  backdrop: number,
+  source: number,
+  blendMode: UvLayerBlendMode
+) => {
+  switch (blendMode) {
+    case "multiply":
+      return backdrop * source;
+    case "screen":
+      return 1 - (1 - backdrop) * (1 - source);
+    case "darken":
+      return Math.min(backdrop, source);
+    case "lighten":
+      return Math.max(backdrop, source);
+    case "color-dodge":
+      return source >= 1 ? 1 : Math.min(1, backdrop / Math.max(1e-6, 1 - source));
+    case "color-burn":
+      return source <= 0 ? 0 : 1 - Math.min(1, (1 - backdrop) / Math.max(1e-6, source));
+    case "overlay":
+      return backdrop <= 0.5
+        ? 2 * backdrop * source
+        : 1 - 2 * (1 - backdrop) * (1 - source);
+    case "hard-light":
+      return source <= 0.5
+        ? 2 * backdrop * source
+        : 1 - 2 * (1 - backdrop) * (1 - source);
+    case "soft-light": {
+      const softLightHelper =
+        backdrop <= 0.25
+          ? ((16 * backdrop - 12) * backdrop + 4) * backdrop
+          : Math.sqrt(backdrop);
+      return source <= 0.5
+        ? backdrop - (1 - 2 * source) * backdrop * (1 - backdrop)
+        : backdrop + (2 * source - 1) * (softLightHelper - backdrop);
+    }
+    case "difference":
+      return Math.abs(backdrop - source);
+    case "exclusion":
+      return backdrop + source - 2 * backdrop * source;
+    case "normal":
+    default:
+      return source;
+  }
+};
+
+const compositeBlendPixel = ({
+  targetData,
+  targetIndex,
+  sourceData,
+  sourceIndex,
+  blendMode,
+  opacity = 1,
+}: {
+  targetData: Uint8ClampedArray;
+  targetIndex: number;
+  sourceData: Uint8ClampedArray;
+  sourceIndex: number;
+  blendMode: UvLayerBlendMode;
+  opacity?: number;
+}) => {
+  const sourceAlpha = (sourceData[sourceIndex + 3] / 255) * Math.max(0, Math.min(1, opacity));
+  if (sourceAlpha <= 0) {
+    return;
+  }
+
+  const backdropAlpha = targetData[targetIndex + 3] / 255;
+  const outputAlpha = sourceAlpha + backdropAlpha * (1 - sourceAlpha);
+  if (outputAlpha <= 0) {
+    return;
+  }
+
+  for (let channelOffset = 0; channelOffset < 3; channelOffset += 1) {
+    const source = sourceData[sourceIndex + channelOffset] / 255;
+    const backdrop = targetData[targetIndex + channelOffset] / 255;
+    const blended = blendChannel(backdrop, source, blendMode);
+    const composited =
+      sourceAlpha * ((1 - backdropAlpha) * source + backdropAlpha * blended) +
+      (1 - sourceAlpha) * backdropAlpha * backdrop;
+    targetData[targetIndex + channelOffset] = Math.round(
+      (composited / outputAlpha) * 255
+    );
+  }
+
+  targetData[targetIndex + 3] = Math.round(outputAlpha * 255);
 };
 
 const getVertexWorldPosition = (
@@ -276,6 +395,8 @@ const drawProjectedUvDecalOverlayToCanvas = ({
   scaleX,
   scaleY,
   rotationDeg,
+  blendMode,
+  opacity = 1,
 }: {
   canvas: HTMLCanvasElement;
   decalImage: CanvasImageSource;
@@ -285,6 +406,8 @@ const drawProjectedUvDecalOverlayToCanvas = ({
   scaleX: number;
   scaleY: number;
   rotationDeg: number;
+  blendMode?: UvLayerBlendMode;
+  opacity?: number;
 }) => {
   const context = canvas.getContext("2d");
   if (!context) {
@@ -365,27 +488,7 @@ const drawProjectedUvDecalOverlayToCanvas = ({
     return (sampleY * sourceWidth + sampleX) * 4;
   };
 
-  const blendPixel = (targetIndex: number, sourceIndex: number) => {
-    const sourceAlpha = sourceImageData.data[sourceIndex + 3] / 255;
-    if (sourceAlpha <= 0) {
-      return;
-    }
-
-    const inverseAlpha = 1 - sourceAlpha;
-    targetImageData.data[targetIndex] =
-      sourceImageData.data[sourceIndex] * sourceAlpha +
-      targetImageData.data[targetIndex] * inverseAlpha;
-    targetImageData.data[targetIndex + 1] =
-      sourceImageData.data[sourceIndex + 1] * sourceAlpha +
-      targetImageData.data[targetIndex + 1] * inverseAlpha;
-    targetImageData.data[targetIndex + 2] =
-      sourceImageData.data[sourceIndex + 2] * sourceAlpha +
-      targetImageData.data[targetIndex + 2] * inverseAlpha;
-    targetImageData.data[targetIndex + 3] = Math.max(
-      targetImageData.data[targetIndex + 3],
-      sourceImageData.data[sourceIndex + 3]
-    );
-  };
+  const resolvedBlendMode = blendMode || "normal";
 
   const indexAttribute = geometry.index;
   const triangleCount = indexAttribute
@@ -484,7 +587,14 @@ const drawProjectedUvDecalOverlayToCanvas = ({
 
         const targetIndex = (canvasY * canvas.width + canvasX) * 4;
         const sourceIndex = getSourceIndex(sourceU, sourceV);
-        blendPixel(targetIndex, sourceIndex);
+        compositeBlendPixel({
+          targetData: targetImageData.data,
+          targetIndex,
+          sourceData: sourceImageData.data,
+          sourceIndex,
+          blendMode: resolvedBlendMode,
+          opacity,
+        });
       }
     }
   }
@@ -562,6 +672,7 @@ export const buildCombinedPreviewTexture = async ({
       scaleX: appliedUvTexture.scaleX,
       scaleY: appliedUvTexture.scaleY,
       rotationDeg: appliedUvTexture.rotationDeg,
+      opacity: appliedUvTexture.opacity,
     });
   }
 
@@ -581,6 +692,8 @@ export const buildCombinedPreviewTexture = async ({
         scaleX: appliedUvDecal.scaleX,
         scaleY: appliedUvDecal.scaleY,
         rotationDeg: appliedUvDecal.rotationDeg,
+        blendMode: appliedUvDecal.blendMode,
+        opacity: appliedUvDecal.opacity,
       });
 
     if (!projected) {
@@ -592,6 +705,8 @@ export const buildCombinedPreviewTexture = async ({
         scaleX: appliedUvDecal.scaleX,
         scaleY: appliedUvDecal.scaleY,
         rotationDeg: appliedUvDecal.rotationDeg,
+        blendMode: appliedUvDecal.blendMode,
+        opacity: appliedUvDecal.opacity,
       });
     }
   }

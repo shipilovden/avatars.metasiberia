@@ -410,6 +410,13 @@
   resolved "https://registry.yarnpkg.com/@webgpu/types/-/types-0.1.69.tgz#6b849bf370a1f29c78bd3aeba8e84c1150b237f2"
   integrity sha512-RPmm6kgRbI8e98zSD3RVACvnuktIja5+yLgDAkTmxLr90BEwdTXRQWNLF3ETTTyH/8mKhznZuN5AveXYFEsMGQ==
 
+abr-js@^0.1.1:
+  version "0.1.1"
+  resolved "https://registry.yarnpkg.com/abr-js/-/abr-js-0.1.1.tgz#693abebdff4c59d66009aeabfc71dcd4b5802881"
+  integrity sha512-35CbYUgVeTlaZTgPRRgWDShFVwACjlx0Re1E4ZNZ6xcIZsVZosoJtY6WKj5gGd4OHNYGu6sc2nEsC2Z2t893Zw==
+  dependencies:
+    sequential-data-view-js "^0.1.1"
+
 base64-js@^1.3.1, base64-js@^1.5.1:
   version "1.5.1"
   resolved "https://registry.yarnpkg.com/base64-js/-/base64-js-1.5.1.tgz#1b1b440160a5bf7ad40b650f095963481903930a"
@@ -630,6 +637,11 @@ nanoid@^3.3.11:
   resolved "https://registry.yarnpkg.com/nanoid/-/nanoid-3.3.11.tgz#4f4f112cefbe303202f2199838128936266d185b"
   integrity sha512-N8SpfPUnUp1bK+PMYW8qSWdl9U+wwNWI4QKxOYDy9JAro3WMX7p2OeVRF9v+347pnakNevPmiHhNmZ2HbFA76w==
 
+node-unrar-js@^2.0.2:
+  version "2.0.2"
+  resolved "https://registry.yarnpkg.com/node-unrar-js/-/node-unrar-js-2.0.2.tgz#03ef602052497263b9aed8ff1e7afb315024f9ec"
+  integrity sha512-hLNmoJzqaKJnod8yiTVGe9hnlNRHotUi0CreSv/8HtfRi/3JnRC8DvsmKfeGGguRjTEulhZK6zXX5PXoVuDZ2w==
+
 object-assign@^4.1.1:
   version "4.1.1"
   resolved "https://registry.yarnpkg.com/object-assign/-/object-assign-4.1.1.tgz#2109adc7965887cfc05cbbd442cac8bfbb360863"
@@ -769,6 +781,11 @@ scheduler@^0.23.0:
   integrity sha512-UOShsPwz7NrMUqhR6t0hWjFduvOzbtv7toDH1/hIrfRNIDBnnBWd0CwJTGvTpngVlmwGCdP9/Zl/tVrDqcuYzQ==
   dependencies:
     loose-envify "^1.1.0"
+
+sequential-data-view-js@^0.1.1:
+  version "0.1.1"
+  resolved "https://registry.yarnpkg.com/sequential-data-view-js/-/sequential-data-view-js-0.1.1.tgz#29c0b59e4e81b44e575fb7074bf519722c922631"
+  integrity sha512-OSWUd0LaU3eS0nQP/DPjOlEnrshJjOl1MdK3DqUZxCGtS29C4vONrzYsPidHXCzBRThimBjBQIhFPR6XqtgF3Q==
 
 setimmediate@^1.0.5:
   version "1.0.5"

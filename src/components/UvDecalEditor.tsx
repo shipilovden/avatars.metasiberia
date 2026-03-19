@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BufferGeometry, Mesh, Texture } from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import type { DecalProjectionBasis, TextDecalStyle } from "./avatar/shared";
+import type {
+  DecalProjectionBasis,
+  TextDecalStyle,
+  UvLayerBlendMode,
+} from "./avatar/shared";
 
 type Copy = {
   uvEditorTitle: string;
@@ -30,6 +34,8 @@ type AppliedUvDecal = {
   scaleY: number;
   rotationDeg: number;
   textureUrl: string;
+  blendMode: UvLayerBlendMode;
+  opacity: number;
   textStyle?: TextDecalStyle | null;
   projection?: DecalProjectionBasis | null;
 };
@@ -54,8 +60,12 @@ export type UvDecalEditorProps = {
   scaleX: number;
   scaleY: number;
   rotationDeg: number;
+  draftOpacity?: number;
+  draftBlendMode?: UvLayerBlendMode;
   onDraftUvChange: (uv: [number, number]) => void;
   onDraftTextureUrlChange?: (url: string | null) => void;
+  onDraftOpacityChange?: (value: number) => void;
+  onDraftBlendModeChange?: (value: UvLayerBlendMode) => void;
   draftAssetId?: string | null;
   draftFileName?: string;
   onDraftFileNameChange?: (fileName: string) => void;
@@ -69,6 +79,8 @@ export type UvDecalEditorProps = {
     scaleX?: number;
     scaleY?: number;
     rotationDeg?: number;
+    blendMode?: UvLayerBlendMode;
+    opacity?: number;
     projection?: DecalProjectionBasis | null;
   }) => {
     assetId: string;
@@ -84,6 +96,8 @@ export type UvDecalEditorProps = {
     scaleY: number;
     rotationDeg: number;
     textureUrl: string;
+    blendMode?: UvLayerBlendMode;
+    opacity?: number;
     textStyle?: TextDecalStyle | null;
     projection?: DecalProjectionBasis | null;
   }) => string | null;
@@ -107,6 +121,8 @@ export type UvDecalEditorProps = {
       scaleX: number;
       scaleY: number;
       rotationDeg: number;
+      blendMode: UvLayerBlendMode;
+      opacity: number;
       textStyle: TextDecalStyle | null;
     }>
   ) => void;

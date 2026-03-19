@@ -224,6 +224,33 @@ export type MeshTintMode = "flat" | "eyebrows" | "lips";
 export type MeshTintEntry = { color: string; mode: MeshTintMode };
 export type MeshTintMap = Partial<Record<string, MeshTintEntry>>;
 
+export const UV_LAYER_BLEND_MODES = [
+  "normal",
+  "multiply",
+  "screen",
+  "overlay",
+  "soft-light",
+  "hard-light",
+  "darken",
+  "lighten",
+  "color-dodge",
+  "color-burn",
+  "difference",
+  "exclusion",
+] as const;
+
+export type UvLayerBlendMode = (typeof UV_LAYER_BLEND_MODES)[number];
+
+export const DEFAULT_UV_LAYER_BLEND_MODE: UvLayerBlendMode = "normal";
+
+export const isUvLayerBlendMode = (value: unknown): value is UvLayerBlendMode =>
+  typeof value === "string" &&
+  (UV_LAYER_BLEND_MODES as readonly string[]).includes(value);
+
+export const getCanvasCompositeOperationForUvBlendMode = (
+  blendMode: UvLayerBlendMode
+): GlobalCompositeOperation => (blendMode === "normal" ? "source-over" : blendMode);
+
 export type AppliedUvDecal = {
   id: string;
   assetId: string;
@@ -235,6 +262,8 @@ export type AppliedUvDecal = {
   scaleY: number;
   rotationDeg: number;
   textureUrl: string;
+  blendMode: UvLayerBlendMode;
+  opacity: number;
   textStyle?: TextDecalStyle | null;
   projection?: DecalProjectionBasis | null;
 };

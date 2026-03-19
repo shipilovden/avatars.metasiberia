@@ -179,8 +179,7 @@ function encodeAlphaMask(mask) {
   });
 }
 
-export function decodeBrushMaskAsPng(options, { maxSize = 512, threshold = 8 } = {}) {
-  const bitmap = decodeBrushBitmap(options);
+export function grayscaleBitmapToMaskPng(bitmap, { maxSize = 512, threshold = 8 } = {}) {
   const mask = grayscaleToAlphaMask(bitmap, threshold);
 
   if (!mask) {
@@ -194,4 +193,9 @@ export function decodeBrushMaskAsPng(options, { maxSize = 512, threshold = 8 } =
     height: resizedMask.height,
     png: encodeAlphaMask(resizedMask),
   };
+}
+
+export function decodeBrushMaskAsPng(options, { maxSize = 512, threshold = 8 } = {}) {
+  const bitmap = decodeBrushBitmap(options);
+  return grayscaleBitmapToMaskPng(bitmap, { maxSize, threshold });
 }

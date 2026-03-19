@@ -2,14 +2,25 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { BufferGeometry, Mesh, Texture } from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import type { UvDecalEditorProps } from "../UvDecalEditor";
-import { getCanonicalMeshSlot } from "../avatar/shared";
-import type { DecalProjectionBasis } from "../avatar/shared";
+import {
+  DEFAULT_UV_LAYER_BLEND_MODE,
+  getCanonicalMeshSlot,
+  getCanvasCompositeOperationForUvBlendMode,
+  UV_LAYER_BLEND_MODES,
+} from "../avatar/shared";
+import type {
+  DecalProjectionBasis,
+  UvLayerBlendMode,
+} from "../avatar/shared";
 import {
   BRUSH_PRESETS,
   DEFAULT_BRUSH_PRESET_ID,
   STAMP_PRESETS,
 } from "./brush-presets";
 import type { BrushPreset, BrushPresetKind } from "./brush-presets";
+import { DesignLayerPanel } from "./DesignLayerPanel";
+import { createGeneratedDesignAsset } from "./design-presets";
+import type { DesignLayerRequest } from "./design-presets";
 import { createUvPortDocumentFromLegacyProps } from "./legacy-adapter";
 import { GFTO_TEXT_FONT_OPTIONS } from "./gfto-font-options";
 import type {
@@ -53,6 +64,7 @@ type LayerOverride = Partial<
     | "scaleX"
     | "scaleY"
     | "rotationDeg"
+    | "blendMode"
   >
 >;
 
@@ -180,6 +192,8 @@ type EditorHistorySnapshot = {
     scaleY: number;
     rotationDeg: number;
     textureUrl: string;
+    blendMode: UvLayerBlendMode;
+    opacity: number;
     textStyle?: UvPortLayer["textStyle"];
     projection?: UvPortLayer["projection"];
   }[];
@@ -207,6 +221,9 @@ const MIN_CROP_RATIO = 0.08;
 const HANDLE_SIZE = 8;
 const HANDLE_HIT_RADIUS = 12;
 const ROTATION_HANDLE_OFFSET = 26;
+const MIRROR_HANDLE_OFFSET = 20;
+const MIRROR_HANDLE_RADIUS = 12;
+const MIN_EDITABLE_TEXTURE_RESOLUTION = 1024;
 
 const HANDLE_DEFINITIONS: LayerTransformHandle[] = [
   { key: "nw", kind: "corner", sx: -1, sy: 1 },
@@ -256,6 +273,20 @@ const cloneLayer = (layer: UvPortLayer): UvPortLayer => ({
       }
     : layer.projection,
 });
+const getBrushPresetLabel = (preset: BrushPreset) => `${preset.group} - ${preset.name}`;
+
+function BrushPresetInlineSwatch({ preset }: { preset: BrushPreset }) {
+  return (
+    <div className="uv-editor__preset-swatch" aria-hidden="true">
+      {preset.previewSrc ? (
+        <img src={preset.previewSrc} alt="" />
+      ) : (
+        <div className={`uv-editor__preset-dot${preset.id === "hard-round" ? " uv-editor__preset-dot--hard" : ""}`} />
+      )}
+    </div>
+  );
+}
+
 const cloneAppliedLayer = (
   layer: {
     id: string;
@@ -268,6 +299,8 @@ const cloneAppliedLayer = (
     scaleY: number;
     rotationDeg: number;
     textureUrl: string;
+    blendMode: UvLayerBlendMode;
+    opacity: number;
     textStyle?: UvPortLayer["textStyle"];
     projection?: DecalProjectionBasis | null;
   }
@@ -793,6 +826,25 @@ const getLocalBoxCorners = (layer: UvPortLayer, bounds: LayerLocalBounds) => ({
   sw: layerLocalToUv({ x: bounds.left, y: bounds.bottom }, layer),
 });
 
+const getMirrorHandleScreenPosition = ({
+  layer,
+  size,
+  viewport,
+  bounds,
+}: {
+  layer: UvPortLayer;
+  size: CanvasSize;
+  viewport: ViewportState;
+  bounds: LayerLocalBounds;
+}) => {
+  const { ne } = getLocalBoxCorners(layer, bounds);
+  const point = uvToScreen([ne.u, ne.v], size, viewport);
+  return {
+    x: point.x + MIRROR_HANDLE_OFFSET,
+    y: point.y - MIRROR_HANDLE_OFFSET,
+  };
+};
+
 const createCropBoxFromLayer = (
   layer: UvPortLayer,
   image: CanvasImageSource | null,
@@ -1083,10 +1135,12 @@ const drawLayer = ({
 
   context.save();
   context.globalAlpha = clamp(layer.opacity, 0, 1);
+  context.globalCompositeOperation = getCanvasCompositeOperationForUvBlendMode(layer.blendMode);
   context.translate(center.x, center.y);
   context.rotate(rotationDegToRad(layer.rotationDeg));
   context.drawImage(image, -width * 0.5, -height * 0.5, width, height);
   if (strokeStyle) {
+    context.globalCompositeOperation = "source-over";
     context.strokeStyle = strokeStyle;
     context.lineWidth = 2;
     context.strokeRect(-width * 0.5, -height * 0.5, width, height);
@@ -1103,6 +1157,7 @@ const drawActiveLayerOverlay = ({
   activeTool,
   cropShape,
   cropBox,
+  showMirrorHandle,
 }: {
   context: CanvasRenderingContext2D;
   layer: UvPortLayer;
@@ -1112,6 +1167,7 @@ const drawActiveLayerOverlay = ({
   activeTool: UvPortTool;
   cropShape: UvPortCropShape;
   cropBox?: LayerLocalBounds | null;
+  showMirrorHandle?: boolean;
 }) => {
   if (!layer.uv || !image) {
     return;
@@ -1201,6 +1257,27 @@ const drawActiveLayerOverlay = ({
     context.beginPath();
     context.arc(centerPoint.x, centerPoint.y, 3, 0, Math.PI * 2);
     context.fill();
+  }
+
+  if (showMirrorHandle) {
+    const mirrorHandlePoint = getMirrorHandleScreenPosition({
+      layer,
+      size,
+      viewport,
+      bounds,
+    });
+    context.fillStyle = "#ffffff";
+    context.strokeStyle = "rgba(0, 217, 232, 0.98)";
+    context.lineWidth = 1.5;
+    context.beginPath();
+    context.arc(mirrorHandlePoint.x, mirrorHandlePoint.y, MIRROR_HANDLE_RADIUS, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+    context.fillStyle = "#00d9e8";
+    context.font = "700 14px 'Segoe UI', sans-serif";
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillText("⇋", mirrorHandlePoint.x, mirrorHandlePoint.y + 0.5);
   }
 
   context.restore();
@@ -1299,6 +1376,36 @@ const createUvMaskCanvas = (geometry: BufferGeometry | null | undefined, size = 
   return canvas;
 };
 
+const getEditableCanvasSize = (width: number, height: number) => {
+  const safeWidth = Math.max(1, Math.round(width));
+  const safeHeight = Math.max(1, Math.round(height));
+  const largestSide = Math.max(safeWidth, safeHeight);
+
+  // RPM body presets can use tiny placeholder maps like 2x2. Painting onto
+  // them directly makes a brush stroke look like a full fill on the avatar.
+  if (largestSide > 16) {
+    return { width: safeWidth, height: safeHeight };
+  }
+
+  if (safeWidth >= safeHeight) {
+    return {
+      width: MIN_EDITABLE_TEXTURE_RESOLUTION,
+      height: Math.max(
+        1,
+        Math.round((safeHeight / safeWidth) * MIN_EDITABLE_TEXTURE_RESOLUTION)
+      ),
+    };
+  }
+
+  return {
+    width: Math.max(
+      1,
+      Math.round((safeWidth / safeHeight) * MIN_EDITABLE_TEXTURE_RESOLUTION)
+    ),
+    height: MIN_EDITABLE_TEXTURE_RESOLUTION,
+  };
+};
+
 const exportCanvasAsPng = (canvas: HTMLCanvasElement, fileName: string) => {
   const url = canvas.toDataURL("image/png");
   const link = document.createElement("a");
@@ -1336,7 +1443,45 @@ const getCanvasImageSize = (image: CanvasImageSource | null) => {
   return null;
 };
 
-const cloneCanvasImageSourceToCanvas = (image: CanvasImageSource | null) => {
+const cloneCanvasImageSourceToCanvas = (
+  image: CanvasImageSource | null,
+  options?: {
+    upscaleTinyTextures?: boolean;
+  }
+) => {
+  const size = getCanvasImageSize(image);
+  if (!image || !size) {
+    return null;
+  }
+
+  const nextSize = options?.upscaleTinyTextures
+    ? getEditableCanvasSize(size.width, size.height)
+    : size;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = nextSize.width;
+  canvas.height = nextSize.height;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return null;
+  }
+
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return canvas;
+};
+
+const canvasImageSourceToDataUrl = (
+  image: CanvasImageSource | null,
+  options?: {
+    upscaleTinyTextures?: boolean;
+  }
+) => {
+  const canvas = cloneCanvasImageSourceToCanvas(image, options);
+  return canvas ? canvas.toDataURL("image/png") : null;
+};
+
+const flipCanvasImageSourceHorizontally = (image: CanvasImageSource | null) => {
   const size = getCanvasImageSize(image);
   if (!image || !size) {
     return null;
@@ -1351,13 +1496,10 @@ const cloneCanvasImageSourceToCanvas = (image: CanvasImageSource | null) => {
   }
 
   context.clearRect(0, 0, canvas.width, canvas.height);
+  context.translate(canvas.width, 0);
+  context.scale(-1, 1);
   context.drawImage(image, 0, 0, canvas.width, canvas.height);
   return canvas;
-};
-
-const canvasImageSourceToDataUrl = (image: CanvasImageSource | null) => {
-  const canvas = cloneCanvasImageSourceToCanvas(image);
-  return canvas ? canvas.toDataURL("image/png") : null;
 };
 
 const getUvPixelPoint = (uv: { u: number; v: number }, canvas: HTMLCanvasElement) => {
@@ -1481,7 +1623,7 @@ const paintBrushStamp = ({
 };
 
 const getLocaleStrings = (copy: UvDecalEditorProps["copy"]) => {
-  const isRussian = /[А-Яа-яЁё]/.test(`${copy.uvEditorTitle} ${copy.uvEditorHint}`);
+  const isRussian = /[\u0400-\u04FF]/.test(`${copy.uvEditorTitle} ${copy.uvEditorHint}`);
   return {
     isRussian,
     summaryHint: isRussian
@@ -1517,6 +1659,7 @@ const getLocaleStrings = (copy: UvDecalEditorProps["copy"]) => {
     mode: isRussian ? "Режим" : "Mode",
     opacity: isRussian ? "Непрозрачность" : "Opacity",
     tool: isRussian ? "Инструмент" : "Tool",
+    mirror: isRussian ? "Зеркало" : "Mirror",
     cropShape: isRussian ? "Форма обрезки" : "Crop Shape",
     brush: isRussian ? "Кисть" : "Brush",
     paintTo: isRussian ? "Рисовать" : "Paint To",
@@ -1550,7 +1693,33 @@ const getLocaleStrings = (copy: UvDecalEditorProps["copy"]) => {
     brushPresetType: isRussian ? "\u0422\u0438\u043f \u043a\u0438\u0441\u0442\u0438" : "Preset Type",
     brushPresets: isRussian ? "\u041a\u0438\u0441\u0442\u0438" : "Brushes",
     stampPresets: isRussian ? "\u0428\u0442\u0430\u043c\u043f\u044b" : "Stamps",
+    designTitle: isRussian ? "\u0414\u0438\u0437\u0430\u0439\u043d" : "Design",
+    designFill: isRussian ? "\u0417\u0430\u043b\u0438\u0432\u043a\u0430" : "Fill",
+    designSolid: isRussian ? "\u0426\u0432\u0435\u0442" : "Solid",
+    designPattern: isRussian ? "\u041f\u0430\u0442\u0442\u0435\u0440\u043d" : "Pattern",
+    designGradient: isRussian ? "\u0413\u0440\u0430\u0434\u0438\u0435\u043d\u0442" : "Gradient",
+    designShape: isRussian ? "\u0424\u0438\u0433\u0443\u0440\u0430" : "Shape",
+    designColor: isRussian ? "\u0426\u0432\u0435\u0442" : "Color",
+    designPatternPreset: isRussian ? "\u041f\u0430\u0442\u0442\u0435\u0440\u043d" : "Pattern",
+    designGradientPreset: isRussian ? "\u0413\u0440\u0430\u0434\u0438\u0435\u043d\u0442" : "Gradient",
+    designAddLayer: isRussian ? "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0434\u0438\u0437\u0430\u0439\u043d" : "Add design",
     previewTitle: "UV Preview",
+    blendMode: isRussian ? "Наложение" : "Blend",
+    blendModeHint: isRussian
+      ? "Выбрать режим, по которому слой смешивается с тем, что находится ниже."
+      : "Choose how the selected layer mixes with the pixels underneath it.",
+    blendNormal: isRussian ? "Обычный" : "Normal",
+    blendMultiply: isRussian ? "Умножение" : "Multiply",
+    blendScreen: isRussian ? "Экран" : "Screen",
+    blendOverlay: isRussian ? "Перекрытие" : "Overlay",
+    blendSoftLight: isRussian ? "Мягкий свет" : "Soft light",
+    blendHardLight: isRussian ? "Жесткий свет" : "Hard light",
+    blendDarken: isRussian ? "Затемнение" : "Darken",
+    blendLighten: isRussian ? "Осветление" : "Lighten",
+    blendColorDodge: isRussian ? "Осветление основы" : "Color dodge",
+    blendColorBurn: isRussian ? "Затемнение основы" : "Color burn",
+    blendDifference: isRussian ? "Разница" : "Difference",
+    blendExclusion: isRussian ? "Исключение" : "Exclusion",
     previewHint: isRussian ? "Колесо zoom, RMB/MMB pan, Alt + drag" : "Wheel zoom, RMB/MMB pan, Alt + drag",
     noMesh: isRussian ? "Нет UV-меша для текущего слота" : "No UV mesh for the current slot",
     removeAsset: isRussian ? "Удалить" : "Remove",
@@ -1660,6 +1829,9 @@ const getLocaleStrings = (copy: UvDecalEditorProps["copy"]) => {
     brushToolHint: isRussian
       ? "Рисовать по базовой карте или по выбранному слою."
       : "Paint on the base map or on the selected layer.",
+    mirrorHint: isRussian
+      ? "Отзеркалить выделенную декаль по горизонтали. Повторное нажатие вернёт её обратно."
+      : "Flip the selected decal horizontally. Click again to flip it back.",
     eraserHint: isRussian
       ? "Стирать часть рисунка на текущем слое."
       : "Erase part of the drawing on the current layer.",
@@ -1695,6 +1867,24 @@ const getLocaleStrings = (copy: UvDecalEditorProps["copy"]) => {
     addTextHint: isRussian
       ? "Создать новый слой-декаль из введённого текста и сделать его активным."
       : "Create a new decal layer from the entered text and make it active.",
+    designFillHint: isRussian
+      ? "\u0412\u044b\u0431\u0440\u0430\u0442\u044c, \u0447\u0435\u043c \u0431\u0443\u0434\u0435\u0442 \u0437\u0430\u043f\u043e\u043b\u043d\u0435\u043d\u0430 \u0444\u0438\u0433\u0443\u0440\u0430: \u0446\u0432\u0435\u0442\u043e\u043c, \u043f\u0430\u0442\u0442\u0435\u0440\u043d\u043e\u043c \u0438\u043b\u0438 \u0433\u0440\u0430\u0434\u0438\u0435\u043d\u0442\u043e\u043c."
+      : "Choose how the shape should be filled: a solid color, a pattern, or a gradient.",
+    designColorHint: isRussian
+      ? "\u0412\u044b\u0431\u0440\u0430\u0442\u044c \u043e\u0441\u043d\u043e\u0432\u043d\u043e\u0439 \u0446\u0432\u0435\u0442 \u0434\u043b\u044f \u043d\u043e\u0432\u043e\u0439 \u0444\u0438\u0433\u0443\u0440\u044b."
+      : "Choose the main color for the new shape.",
+    designPatternHint: isRussian
+      ? "\u0412\u044b\u0431\u0440\u0430\u0442\u044c \u043f\u0430\u0442\u0442\u0435\u0440\u043d, \u043a\u043e\u0442\u043e\u0440\u044b\u043c \u0431\u0443\u0434\u0435\u0442 \u0437\u0430\u043f\u043e\u043b\u043d\u0435\u043d\u0430 \u0444\u0438\u0433\u0443\u0440\u0430."
+      : "Choose the pattern used to fill the shape.",
+    designGradientHint: isRussian
+      ? "\u0412\u044b\u0431\u0440\u0430\u0442\u044c \u0433\u0440\u0430\u0434\u0438\u0435\u043d\u0442, \u043a\u043e\u0442\u043e\u0440\u044b\u043c \u0431\u0443\u0434\u0435\u0442 \u0437\u0430\u043f\u043e\u043b\u043d\u0435\u043d\u0430 \u0444\u0438\u0433\u0443\u0440\u0430."
+      : "Choose the gradient used to fill the shape.",
+    designShapeHint: isRussian
+      ? "\u0412\u044b\u0431\u0440\u0430\u0442\u044c \u0444\u043e\u0440\u043c\u0443 \u043d\u043e\u0432\u043e\u0439 \u0434\u0435\u043a\u0430\u043b\u0438."
+      : "Choose the shape of the new decal.",
+    designAddHint: isRussian
+      ? "\u0421\u043e\u0437\u0434\u0430\u0442\u044c \u043d\u043e\u0432\u0443\u044e \u0434\u0435\u043a\u0430\u043b\u044c \u0438\u0437 \u0432\u044b\u0431\u0440\u0430\u043d\u043d\u043e\u0439 \u0444\u043e\u0440\u043c\u044b \u0438 \u0442\u0435\u043a\u0443\u0449\u0435\u0439 \u0437\u0430\u043b\u0438\u0432\u043a\u0438."
+      : "Create a new decal from the selected shape and fill.",
     imageHint: isRussian ? "Рисовать по самому изображению слоя." : "Paint directly on the layer image.",
     maskHint: isRussian
       ? "Рисовать по маске слоя, чтобы скрывать или показывать части изображения."
@@ -1741,6 +1931,8 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     rotationDeg,
     onDraftUvChange,
     onDraftTextureUrlChange,
+    onDraftOpacityChange,
+    onDraftBlendModeChange,
     draftAssetId,
     onDraftFileNameChange,
     onCreateGeneratedDecal,
@@ -1796,6 +1988,7 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
   const [brushSoftness, setBrushSoftness] = useState(38);
   const [brushPresetKind, setBrushPresetKind] = useState<BrushPresetKind>("brush");
   const [brushPresetId, setBrushPresetId] = useState(DEFAULT_BRUSH_PRESET_ID);
+  const [isBrushPresetMenuOpen, setIsBrushPresetMenuOpen] = useState(false);
   const [textValue, setTextValue] = useState("");
   const [textFontFamily, setTextFontFamily] = useState(TEXT_FONT_OPTIONS[0]?.value || 'Arial, sans-serif');
   const [textFontSize, setTextFontSize] = useState(96);
@@ -1812,6 +2005,8 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
   const [redoStack, setRedoStack] = useState<EditorHistorySnapshot[]>([]);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const canvasWrapRef = useRef<HTMLDivElement | null>(null);
+  const brushPresetMenuRef = useRef<HTMLDivElement | null>(null);
+  const selectedBrushPresetOptionRef = useRef<HTMLButtonElement | null>(null);
   const interactionRef = useRef<InteractionState>(null);
   const baseLayerCanvasRef = useRef<Record<string, HTMLCanvasElement>>({});
   const editableLayerCanvasRef = useRef<Record<string, HTMLCanvasElement>>({});
@@ -1879,6 +2074,49 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
       setBrushPresetId(activeBrushPresetOptions[0]?.id || DEFAULT_BRUSH_PRESET_ID);
     }
   }, [activeBrushPresetOptions, brushPresetId]);
+
+  useEffect(() => {
+    setIsBrushPresetMenuOpen(false);
+  }, [brushPresetKind]);
+
+  useEffect(() => {
+    if (!isBrushPresetMenuOpen) {
+      return;
+    }
+
+    selectedBrushPresetOptionRef.current?.scrollIntoView({
+      block: "nearest",
+    });
+  }, [activeBrushPreset?.id, isBrushPresetMenuOpen]);
+
+  useEffect(() => {
+    if (!isBrushPresetMenuOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (brushPresetMenuRef.current?.contains(target)) {
+        return;
+      }
+
+      setIsBrushPresetMenuOpen(false);
+    };
+
+    const handlePresetMenuKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsBrushPresetMenuOpen(false);
+      }
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handlePresetMenuKeyDown);
+
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handlePresetMenuKeyDown);
+    };
+  }, [isBrushPresetMenuOpen]);
 
   useEffect(() => {
     if (!activeSlot || !modelUrl) {
@@ -2010,6 +2248,39 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     setTextColor(selectedTextLayer.textStyle.color);
   }, [selectedTextLayer]);
 
+  const getBlendModeLabel = (blendMode: UvLayerBlendMode) => {
+    switch (blendMode) {
+      case "multiply":
+        return locale.blendMultiply;
+      case "screen":
+        return locale.blendScreen;
+      case "overlay":
+        return locale.blendOverlay;
+      case "soft-light":
+        return locale.blendSoftLight;
+      case "hard-light":
+        return locale.blendHardLight;
+      case "darken":
+        return locale.blendDarken;
+      case "lighten":
+        return locale.blendLighten;
+      case "color-dodge":
+        return locale.blendColorDodge;
+      case "color-burn":
+        return locale.blendColorBurn;
+      case "difference":
+        return locale.blendDifference;
+      case "exclusion":
+        return locale.blendExclusion;
+      case "normal":
+      default:
+        return locale.blendNormal;
+    }
+  };
+  const blendModeOptions = UV_LAYER_BLEND_MODES.map((blendMode) => ({
+    value: blendMode,
+    label: getBlendModeLabel(blendMode),
+  }));
   const getLayerKindLabel = (layer: UvPortLayer) =>
     layer.kind === "uv-layout"
       ? locale.uvLayout
@@ -2021,7 +2292,7 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
             : locale.draft
           : extractedControls?.mode === "texture"
             ? extractedControls.labels.texture
-            : locale.decal;
+            : `${locale.decal} · ${getBlendModeLabel(layer.blendMode)}`;
   const getTooltipProps = (label: string) => ({
     title: label,
     "aria-label": label,
@@ -2122,8 +2393,12 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
       return;
     }
 
-    const dataUrl = canvasImageSourceToDataUrl(activeLoadedMesh.baseTextureImage);
-    const baseCanvas = cloneCanvasImageSourceToCanvas(activeLoadedMesh.baseTextureImage);
+    const dataUrl = canvasImageSourceToDataUrl(activeLoadedMesh.baseTextureImage, {
+      upscaleTinyTextures: true,
+    });
+    const baseCanvas = cloneCanvasImageSourceToCanvas(activeLoadedMesh.baseTextureImage, {
+      upscaleTinyTextures: true,
+    });
     if (!dataUrl || !baseCanvas) {
       return;
     }
@@ -2153,7 +2428,9 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
       );
 
       const overrideImage = images[baseTextureOverrideUrl] || null;
-      const overrideCanvas = cloneCanvasImageSourceToCanvas(overrideImage);
+      const overrideCanvas = cloneCanvasImageSourceToCanvas(overrideImage, {
+        upscaleTinyTextures: true,
+      });
       if (overrideCanvas) {
         baseLayerCanvasRef.current[activeSlot] = overrideCanvas;
       }
@@ -2165,11 +2442,14 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     }
 
     const restoredBaseCanvas = cloneCanvasImageSourceToCanvas(
-      activeLoadedMesh?.baseTextureImage || null
+      activeLoadedMesh?.baseTextureImage || null,
+      {
+        upscaleTinyTextures: true,
+      }
     );
-    const restoredBaseUrl = canvasImageSourceToDataUrl(
-      activeLoadedMesh?.baseTextureImage || null
-    );
+    const restoredBaseUrl = canvasImageSourceToDataUrl(activeLoadedMesh?.baseTextureImage || null, {
+      upscaleTinyTextures: true,
+    });
 
     if (restoredBaseCanvas) {
       baseLayerCanvasRef.current[activeSlot] = restoredBaseCanvas;
@@ -2396,6 +2676,10 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
         viewport,
         activeTool,
         cropShape,
+        showMirrorHandle:
+          activeTool === "transform" &&
+          !isTextureMode &&
+          !selectedLayer.textStyle,
         cropBox:
           activeTool === "crop" && cropPreview?.layerId === selectedLayer.id
             ? cropPreview.box
@@ -2421,6 +2705,7 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     selectedLayer?.scale,
     selectedLayer?.scaleX,
     selectedLayer?.scaleY,
+    selectedLayer?.textStyle,
     selectedLayer?.textureUrl,
     selectedLayer?.uv,
     soloLayerId,
@@ -2430,6 +2715,7 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     viewport,
     visiblePreviewLayers,
     selectedLayerPreviewImage,
+    isTextureMode,
   ]);
 
   const buildHistorySnapshot = (): EditorHistorySnapshot => ({
@@ -2453,7 +2739,9 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     const nextCanvases: Record<string, HTMLCanvasElement> = {};
     for (const [slot, textureUrl] of Object.entries(nextTextureUrls)) {
       const cachedImage = textureUrl ? images[textureUrl] || null : null;
-      const restoredCanvas = cloneCanvasImageSourceToCanvas(cachedImage);
+      const restoredCanvas = cloneCanvasImageSourceToCanvas(cachedImage, {
+        upscaleTinyTextures: true,
+      });
       if (restoredCanvas) {
         nextCanvases[slot] = restoredCanvas;
       }
@@ -2610,6 +2898,9 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
       if (typeof nextPatch.locked === "boolean") {
         uiPatch.locked = nextPatch.locked;
       }
+      if (nextPatch.blendMode) {
+        uiPatch.blendMode = nextPatch.blendMode;
+      }
       if (typeof nextPatch.name === "string") {
         uiPatch.name = nextPatch.name;
       }
@@ -2649,6 +2940,7 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
 
       const uiPatch: LayerOverride = {};
       if (typeof nextPatch.opacity === "number") {
+        onDraftOpacityChange?.(clamp(nextPatch.opacity, 0, 1));
         uiPatch.opacity = nextPatch.opacity;
       }
       if (typeof nextPatch.visible === "boolean") {
@@ -2656,6 +2948,10 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
       }
       if (typeof nextPatch.locked === "boolean") {
         uiPatch.locked = nextPatch.locked;
+      }
+      if (nextPatch.blendMode) {
+        onDraftBlendModeChange?.(nextPatch.blendMode);
+        uiPatch.blendMode = nextPatch.blendMode;
       }
       if (typeof nextPatch.name === "string") {
         uiPatch.name = nextPatch.name;
@@ -2697,6 +2993,8 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
       ...(typeof nextPatch.rotationDeg === "number"
         ? { rotationDeg: nextPatch.rotationDeg }
         : {}),
+      ...(nextPatch.blendMode ? { blendMode: nextPatch.blendMode } : {}),
+      ...(typeof nextPatch.opacity === "number" ? { opacity: nextPatch.opacity } : {}),
     });
 
     const uiPatch: LayerOverride = {};
@@ -2708,6 +3006,9 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     }
     if (typeof nextPatch.locked === "boolean") {
       uiPatch.locked = nextPatch.locked;
+    }
+    if (nextPatch.blendMode) {
+      uiPatch.blendMode = nextPatch.blendMode;
     }
     if (Object.keys(uiPatch).length > 0) {
       setLayerUiPatch(layerId, uiPatch);
@@ -2725,7 +3026,13 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
   const brushLayerName = locale.isRussian ? "Слой кисти" : "Brush layer";
 
   const createTransparentCanvas = (sourceImage: CanvasImageSource | null) => {
-    const size = getCanvasImageSize(sourceImage) || { width: 1024, height: 1024 };
+    const sourceSize = getCanvasImageSize(sourceImage);
+    const size = sourceSize
+      ? getEditableCanvasSize(sourceSize.width, sourceSize.height)
+      : {
+          width: MIN_EDITABLE_TEXTURE_RESOLUTION,
+          height: MIN_EDITABLE_TEXTURE_RESOLUTION,
+        };
     const canvas = document.createElement("canvas");
     canvas.width = size.width;
     canvas.height = size.height;
@@ -2780,7 +3087,8 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
       activeLoadedMesh?.baseTextureImage ||
       null;
     const nextCanvas =
-      cloneCanvasImageSourceToCanvas(sourceImage) || createUvMaskCanvas(activeLoadedMesh?.geometry);
+      cloneCanvasImageSourceToCanvas(sourceImage, { upscaleTinyTextures: true }) ||
+      createUvMaskCanvas(activeLoadedMesh?.geometry);
     if (!nextCanvas) {
       return null;
     }
@@ -2867,6 +3175,7 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
         scaleX: 1,
         scaleY: 1,
         rotationDeg: 0,
+        blendMode: DEFAULT_UV_LAYER_BLEND_MODE,
         projection: null,
       });
       if (!created?.layerId) {
@@ -2899,6 +3208,7 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
         scaleX: 1,
         scaleY: 1,
         rotationDeg: 0,
+        blendMode: DEFAULT_UV_LAYER_BLEND_MODE,
         opacity: 1,
         visible: true,
         locked: false,
@@ -2932,6 +3242,7 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
       scaleX: 1,
       scaleY: 1,
       rotationDeg: 0,
+      blendMode: DEFAULT_UV_LAYER_BLEND_MODE,
       opacity: 1,
       visible: true,
       locked: false,
@@ -2946,7 +3257,7 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
 
     const sourceImage = getLayerPreviewImage(layer);
     const nextCanvas =
-      cloneCanvasImageSourceToCanvas(sourceImage) ||
+      cloneCanvasImageSourceToCanvas(sourceImage, { upscaleTinyTextures: true }) ||
       createTransparentCanvas(activeLoadedMesh?.baseTextureImage || null);
     if (!nextCanvas) {
       return null;
@@ -3237,6 +3548,24 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
 
     const localPointer = uvToLayerLocal(nextUv, movableLayer);
     const layerBounds = getLayerLocalBounds(movableLayer, selectedLayerPreviewImage);
+
+    if (activeTool === "transform" && canMirrorSelected) {
+      const mirrorHandlePoint = getMirrorHandleScreenPosition({
+        layer: movableLayer,
+        size: canvasSize,
+        viewport,
+        bounds: layerBounds,
+      });
+      const mirrorDistance = Math.hypot(
+        pointer.x - mirrorHandlePoint.x,
+        pointer.y - mirrorHandlePoint.y
+      );
+      if (mirrorDistance <= MIRROR_HANDLE_RADIUS + 2) {
+        event.preventDefault();
+        handleMirrorSelectedLayer();
+        return;
+      }
+    }
 
     if (activeTool === "crop") {
       const cropBox = createCropBoxFromLayer(movableLayer, selectedLayerPreviewImage, cropShape);
@@ -3586,9 +3915,18 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     .filter((layer) => layer.kind === "decal")
     .map((layer) => layer.id);
   const opacityPercent = Math.round((selectedLayer?.opacity ?? 1) * 100);
+  const selectedBlendMode = selectedLayer?.blendMode || DEFAULT_UV_LAYER_BLEND_MODE;
   const isStructuralLayer =
     selectedLayer?.kind === "base" || selectedLayer?.kind === "uv-layout";
+  const canAdjustBlendMode = Boolean(selectedLayer && selectedLayer.kind === "decal");
   const canTransformSelected = Boolean(movableLayer);
+  const canMirrorSelected = Boolean(
+    !isTextureMode &&
+      movableLayer &&
+      selectedLayerPreviewImage &&
+      !movableLayer.textStyle &&
+      (movableLayer.kind === "decal" || movableLayer.kind === "draft")
+  );
   const canDuplicateSelected = Boolean(
     selectedLayer &&
       selectedLayer.kind !== "base" &&
@@ -3598,11 +3936,28 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
   const canApplyDraftLayer = hasDraftLayer && Boolean(onApply);
   const isTextCreationAvailable = true;
   const canCreateTextLayer = Boolean(onCreateGeneratedDecal) && Boolean(textValue.trim());
+  const canCreateDesignLayer = Boolean(onCreateGeneratedDecal);
 
   const getBaseLayerId = () =>
     renderLayers.find((layer) => layer.kind === "base" && layer.meshName === activeSlot)?.id ||
     renderLayers.find((layer) => layer.kind === "base")?.id ||
     null;
+
+  const handleMirrorSelectedLayer = () => {
+    if (!movableLayer || !selectedLayerPreviewImage || !canMirrorSelected) {
+      return;
+    }
+
+    const mirroredCanvas = flipCanvasImageSourceHorizontally(selectedLayerPreviewImage);
+    if (!mirroredCanvas) {
+      return;
+    }
+
+    pushHistorySnapshot();
+    editableLayerCanvasRef.current[movableLayer.id] = mirroredCanvas;
+    syncEditableLayerTexture(movableLayer, mirroredCanvas);
+    setActiveTool("transform");
+  };
 
   const handleSelectTool = (tool: UvPortTool) => {
     setActiveTool(tool);
@@ -3646,6 +4001,28 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     }
   };
 
+  const handleCreateDesignLayer = (request: DesignLayerRequest) => {
+    if (!onCreateGeneratedDecal) {
+      return;
+    }
+
+    const generated = createGeneratedDesignAsset({
+      ...request,
+      isRussian: locale.isRussian,
+    });
+
+    pushHistorySnapshot();
+    const created = onCreateGeneratedDecal({
+      ...generated,
+      blendMode: DEFAULT_UV_LAYER_BLEND_MODE,
+      ...(activeSlot ? { meshName: activeSlot, uv: draftUv } : {}),
+    });
+    if (created?.layerId) {
+      setSelectedLayerId(created.layerId);
+    }
+    setActiveTool("transform");
+  };
+
   const handleCreateTextLayer = async () => {
     if (!canCreateTextLayer || !onCreateGeneratedDecal) {
       return;
@@ -3671,6 +4048,7 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     pushHistorySnapshot();
     const created = onCreateGeneratedDecal({
       ...generated,
+      blendMode: DEFAULT_UV_LAYER_BLEND_MODE,
       ...(activeSlot ? { meshName: activeSlot, uv: draftUv } : {}),
     });
     if (created?.layerId) {
@@ -3863,6 +4241,8 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
         scaleY: selectedLayer.scaleY,
         rotationDeg: selectedLayer.rotationDeg,
         textureUrl: selectedLayer.textureUrl,
+        blendMode: selectedLayer.blendMode,
+        opacity: selectedLayer.opacity,
         textStyle: selectedLayer.textStyle || null,
         projection: selectedLayer.projection || null,
       });
@@ -3915,11 +4295,14 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
 
       if (isPaintedBaseDraft && activeSlot) {
         const restoredBaseCanvas = cloneCanvasImageSourceToCanvas(
-          activeLoadedMesh?.baseTextureImage || null
+          activeLoadedMesh?.baseTextureImage || null,
+          {
+            upscaleTinyTextures: true,
+          }
         );
-        const restoredBaseUrl = canvasImageSourceToDataUrl(
-          activeLoadedMesh?.baseTextureImage || null
-        );
+        const restoredBaseUrl = canvasImageSourceToDataUrl(activeLoadedMesh?.baseTextureImage || null, {
+          upscaleTinyTextures: true,
+        });
 
         if (restoredBaseCanvas) {
           baseLayerCanvasRef.current[activeSlot] = restoredBaseCanvas;
@@ -3980,6 +4363,11 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
       return;
     }
     exportCanvasAsPng(canvasRef.current, `uv-preview-${activeSlot || "mesh"}.png`);
+  };
+
+  const handleSelectBrushPreset = (presetId: string) => {
+    setBrushPresetId(presetId);
+    setIsBrushPresetMenuOpen(false);
   };
 
   const canUndo = undoStack.length > 0;
@@ -4211,6 +4599,29 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
                       <span className="uv-editor__value-chip">{opacityPercent}%</span>
                     </div>
                   </div>
+                  {canAdjustBlendMode ? (
+                    <div className="uv-editor__control-group">
+                      <div className="uv-editor__control-label">{locale.blendMode}</div>
+                      <select
+                        className="uv-editor__text-select"
+                        value={selectedBlendMode}
+                        {...getTooltipProps(locale.blendModeHint)}
+                        onChange={(event) =>
+                          selectedLayer
+                            ? commitLayerPatch(selectedLayer.id, {
+                                blendMode: event.target.value as UvLayerBlendMode,
+                              })
+                            : undefined
+                        }
+                      >
+                        {blendModeOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : null}
                   {extractedControls ? (
                     <div className="uv-editor__control-group">
                       <div className="uv-editor__control-label">{locale.currentFile}</div>
@@ -4267,6 +4678,19 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
                         </button>
                       ))}
                     </div>
+                    {!isTextureMode ? (
+                      <div className="uv-editor__control-actions">
+                        <button
+                          type="button"
+                          className="uv-editor__tool uv-editor__tool--secondary"
+                          {...getTooltipProps(locale.mirrorHint)}
+                          disabled={!canMirrorSelected}
+                          onClick={handleMirrorSelectedLayer}
+                        >
+                          {`⇋ ${locale.mirror}`}
+                        </button>
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="uv-editor__control-group">
@@ -4313,39 +4737,59 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
 
                   <div className="uv-editor__control-group">
                     <div className="uv-editor__control-label">{locale.brushPreset}</div>
-                    <select
-                      className="uv-editor__text-select"
-                      value={activeBrushPreset?.id || ""}
-                      {...getTooltipProps(locale.brushPresetHint)}
-                      onChange={(event) => setBrushPresetId(event.target.value)}
-                    >
-                      {activeBrushPresetOptions.map((preset) => (
-                        <option key={preset.id} value={preset.id}>
-                          {`${preset.group} - ${preset.name}`}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                    <div className="uv-editor__preset-picker" ref={brushPresetMenuRef}>
+                      <button
+                        type="button"
+                        className={`uv-editor__preset-trigger${isBrushPresetMenuOpen ? " uv-editor__preset-trigger--open" : ""}`}
+                        aria-haspopup="listbox"
+                        aria-expanded={isBrushPresetMenuOpen}
+                        {...getTooltipProps(locale.brushPresetHint)}
+                        onClick={() => setIsBrushPresetMenuOpen((current) => !current)}
+                      >
+                        {activeBrushPreset ? <BrushPresetInlineSwatch preset={activeBrushPreset} /> : null}
+                        <span className="uv-editor__preset-trigger-copy">
+                          <span className="uv-editor__preset-trigger-title">
+                            {activeBrushPreset ? getBrushPresetLabel(activeBrushPreset) : locale.brushPreset}
+                          </span>
+                          {activeBrushPreset ? (
+                            <span className="uv-editor__preset-trigger-subtitle">{activeBrushPreset.source}</span>
+                          ) : null}
+                        </span>
+                        <span
+                          className={`uv-editor__preset-trigger-icon${isBrushPresetMenuOpen ? " uv-editor__preset-trigger-icon--open" : ""}`}
+                          aria-hidden="true"
+                        >
+                          ▾
+                        </span>
+                      </button>
 
-                  {activeBrushPreset ? (
-                    <div className="uv-editor__brush-preview">
-                      <div className="uv-editor__brush-preview-swatch">
-                        {activeBrushPreset.previewSrc ? (
-                          <img src={activeBrushPreset.previewSrc} alt={activeBrushPreset.name} />
-                        ) : (
-                          <div
-                            className={`uv-editor__brush-preview-dot${activeBrushPreset.id === "hard-round" ? " uv-editor__brush-preview-dot--hard" : ""}`}
-                          />
-                        )}
-                      </div>
-                      <div className="uv-editor__brush-preview-meta">
-                        <div className="uv-editor__brush-preview-title">{activeBrushPreset.name}</div>
-                        <div className="uv-editor__brush-preview-subtitle">
-                          {`${activeBrushPreset.group} · ${activeBrushPreset.source}`}
+                      {isBrushPresetMenuOpen ? (
+                        <div className="uv-editor__preset-menu" role="listbox" aria-label={locale.brushPreset}>
+                          {activeBrushPresetOptions.map((preset) => {
+                            const isSelected = preset.id === activeBrushPreset?.id;
+
+                            return (
+                              <button
+                                key={preset.id}
+                                ref={isSelected ? selectedBrushPresetOptionRef : undefined}
+                                type="button"
+                                role="option"
+                                aria-selected={isSelected}
+                                className={`uv-editor__preset-option${isSelected ? " uv-editor__preset-option--active" : ""}`}
+                                onClick={() => handleSelectBrushPreset(preset.id)}
+                              >
+                                <BrushPresetInlineSwatch preset={preset} />
+                                <span className="uv-editor__preset-option-copy">
+                                  <span className="uv-editor__preset-option-title">{getBrushPresetLabel(preset)}</span>
+                                  <span className="uv-editor__preset-option-subtitle">{preset.source}</span>
+                                </span>
+                              </button>
+                            );
+                          })}
                         </div>
-                      </div>
+                      ) : null}
                     </div>
-                  ) : null}
+                  </div>
 
                   <div className="uv-editor__control-group">
                     <div className="uv-editor__control-label">{locale.brush}</div>
@@ -4383,6 +4827,16 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
                   </div>
 
                 </div>
+
+                {canCreateDesignLayer ? (
+                  <DesignLayerPanel
+                    locale={locale}
+                    brushColor={brushColor}
+                    canAdd={canCreateDesignLayer}
+                    onBrushColorChange={setBrushColor}
+                    onAdd={handleCreateDesignLayer}
+                  />
+                ) : null}
 
                 {isTextCreationAvailable ? (
                   <div className="uv-editor__control-panel uv-editor__control-panel--text">

@@ -1,4 +1,7 @@
 import type { UvDecalEditorProps } from "../UvDecalEditor";
+import {
+  DEFAULT_UV_LAYER_BLEND_MODE,
+} from "../avatar/shared";
 import type { UvPortLayer, UvPortMeshDocument } from "./types";
 
 const isRussianCopy = (value: string) => /[А-Яа-яЁё]/.test(value);
@@ -19,6 +22,8 @@ export const createUvPortDocumentFromLegacyProps = (
     scaleX,
     scaleY,
     rotationDeg,
+    draftOpacity,
+    draftBlendMode,
   } = props;
   const activeSlot = selectedSlot || slotOptions[0]?.id || null;
   const isRussian = isRussianCopy(`${copy.uvEditorTitle} ${copy.uvEditorHint}`);
@@ -34,6 +39,7 @@ export const createUvPortDocumentFromLegacyProps = (
     scaleX: 1,
     scaleY: 1,
     rotationDeg: 0,
+    blendMode: DEFAULT_UV_LAYER_BLEND_MODE,
     opacity: 1,
     visible: true,
     locked: true,
@@ -50,6 +56,7 @@ export const createUvPortDocumentFromLegacyProps = (
     scaleX: 1,
     scaleY: 1,
     rotationDeg: 0,
+    blendMode: DEFAULT_UV_LAYER_BLEND_MODE,
     opacity: 1,
     visible: true,
     locked: true,
@@ -73,7 +80,8 @@ export const createUvPortDocumentFromLegacyProps = (
           scaleX: entry.scaleX,
           scaleY: entry.scaleY,
           rotationDeg: entry.rotationDeg,
-          opacity: 1,
+          blendMode: entry.blendMode || DEFAULT_UV_LAYER_BLEND_MODE,
+          opacity: typeof entry.opacity === "number" ? entry.opacity : 1,
           visible: true,
           locked: false,
         }))
@@ -94,7 +102,8 @@ export const createUvPortDocumentFromLegacyProps = (
           scaleX,
           scaleY,
           rotationDeg,
-          opacity: 1,
+          blendMode: draftBlendMode || DEFAULT_UV_LAYER_BLEND_MODE,
+          opacity: typeof draftOpacity === "number" ? draftOpacity : 1,
           visible: true,
           locked: false,
         }

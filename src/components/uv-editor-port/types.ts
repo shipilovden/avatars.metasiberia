@@ -1,4 +1,8 @@
-import type { DecalProjectionBasis, TextDecalStyle } from "../avatar/shared";
+import type {
+  DecalProjectionBasis,
+  TextDecalStyle,
+  UvLayerBlendMode,
+} from "../avatar/shared";
 
 export type UvPortTool = "transform" | "crop" | "brush" | "eraser" | "eyedropper" | "fill";
 
@@ -24,6 +28,7 @@ export type UvPortLayer = {
   scaleX: number;
   scaleY: number;
   rotationDeg: number;
+  blendMode: UvLayerBlendMode;
   opacity: number;
   visible: boolean;
   locked: boolean;

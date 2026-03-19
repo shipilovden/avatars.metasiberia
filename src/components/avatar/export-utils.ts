@@ -272,6 +272,7 @@ const drawReplacementPattern = async ({
   scaleX,
   scaleY,
   rotationDeg,
+  opacity = 1,
 }: {
   canvas: HTMLCanvasElement;
   textureUrl: string;
@@ -280,6 +281,7 @@ const drawReplacementPattern = async ({
   scaleX: number;
   scaleY: number;
   rotationDeg: number;
+  opacity?: number;
 }) => {
   const image = await readFileAsImage(await fetch(textureUrl).then((response) => response.blob()));
   drawReplacementPatternFromImage({
@@ -290,6 +292,7 @@ const drawReplacementPattern = async ({
     scaleX,
     scaleY,
     rotationDeg,
+    opacity,
   });
 };
 
@@ -652,6 +655,7 @@ const rebuildGlbWithModifiedImages = async ({
         scaleX: appliedUvTexture.scaleX,
         scaleY: appliedUvTexture.scaleY,
         rotationDeg: appliedUvTexture.rotationDeg,
+        opacity: appliedUvTexture.opacity,
       });
     }
 
@@ -667,6 +671,8 @@ const rebuildGlbWithModifiedImages = async ({
         scaleX: appliedUvDecal.scaleX,
         scaleY: appliedUvDecal.scaleY,
         rotationDeg: appliedUvDecal.rotationDeg,
+        blendMode: appliedUvDecal.blendMode,
+        opacity: appliedUvDecal.opacity,
       });
     }
 
