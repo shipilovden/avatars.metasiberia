@@ -21,7 +21,8 @@ import {
   SceneBridge,
   SceneLoader,
 } from "./SceneComponents";
-import { ExportPreviewModal, EyedropperIcon, PaintPaletteIcon } from "./UiComponents";
+import { LightRotationControl } from "./LightRotationControl";
+import { AvatarSettingsIcon, ExportPreviewModal, EyedropperIcon } from "./UiComponents";
 import { HAIR_COLOR_SWATCHES } from "./shared";
 import type { AppliedUvDecal, MeshSlot, MeshTintMap, UiCopy, UiLocale } from "./shared";
 
@@ -114,6 +115,10 @@ type EyeDropperWindow = Window & {
 const clampColorPanelPosition = (value: number, min: number, max: number) =>
   Math.max(min, Math.min(max, value));
 
+const MAIN_LIGHT_RADIUS = Math.hypot(2.5, 2.8);
+const MAIN_LIGHT_HEIGHT = 4.2;
+const MAIN_LIGHT_DEFAULT_AZIMUTH_DEG = (Math.atan2(2.5, 2.8) * 180) / Math.PI;
+
 export function StagePanel({
   copy,
   locale,
@@ -164,6 +169,7 @@ export function StagePanel({
   onCloseExportModal,
 }: StagePanelProps) {
   const [isPickingColor, setIsPickingColor] = useState(false);
+  const [mainLightAzimuthDeg, setMainLightAzimuthDeg] = useState(MAIN_LIGHT_DEFAULT_AZIMUTH_DEG);
   const selectedDecalFileName =
     paintPanelProps.decalFiles.find((file) => file.isSelected)?.fileName ||
     paintPanelProps.decalFiles[paintPanelProps.decalFiles.length - 1]?.fileName ||
@@ -228,6 +234,12 @@ export function StagePanel({
     },
   } as const;
   const shouldShowEditor = USE_EXTRACTED_UV_EDITOR_PORT ? isPaintPanelOpen : showUvEditor;
+  const mainLightAzimuthRad = (mainLightAzimuthDeg * Math.PI) / 180;
+  const mainLightPosition: [number, number, number] = [
+    Math.sin(mainLightAzimuthRad) * MAIN_LIGHT_RADIUS,
+    MAIN_LIGHT_HEIGHT,
+    Math.cos(mainLightAzimuthRad) * MAIN_LIGHT_RADIUS,
+  ];
 
   const handlePickColorFromScreen = async () => {
     if (!supportsEyeDropper || isPickingColor) {
@@ -253,11 +265,12 @@ export function StagePanel({
       <button
         className="paint-toggle-button"
         type="button"
-        aria-label={copy.paintPanel}
+        title={locale === "ru" ? "Настройки аватара" : "Avatar settings"}
+        aria-label={locale === "ru" ? "Настройки аватара" : "Avatar settings"}
         onClick={onTogglePaintPanel}
       >
         <span className="paint-toggle-button__icon">
-          <PaintPaletteIcon />
+          <AvatarSettingsIcon />
         </span>
       </button>
       <div className="stage-toolbar">
@@ -269,6 +282,11 @@ export function StagePanel({
         >
           <span className="locale-chip locale-chip--active">{locale === "ru" ? "R" : "E"}</span>
         </button>
+        <LightRotationControl
+          locale={locale}
+          value={mainLightAzimuthDeg}
+          onChange={setMainLightAzimuthDeg}
+        />
         <button className="next-button" type="button" onClick={onNext}>
           {copy.next} <span aria-hidden>&rarr;</span>
         </button>
@@ -294,7 +312,7 @@ export function StagePanel({
           <ambientLight intensity={0.62} />
           <hemisphereLight intensity={0.36} groundColor="#cfcfcf" />
           <directionalLight
-            position={[2.5, 4.2, 2.8]}
+            position={mainLightPosition}
             intensity={1.2}
             castShadow
             shadow-mapSize-width={2048}

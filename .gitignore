@@ -3,6 +3,16 @@ dist
 .vercel
 *.local
 .env*
+.playwright-cli/
+build-codex.log
+dist-reg-ru.tgz
+dist-reg-ru.zip
+test-results/
+tmp-upload-*.bin
+upload-parts/
+upload-parts-tgz/
+.secrets/*.local.md
+.secrets/*.secret.json
 
 .vscode/*
 !.vscode/extensions.json

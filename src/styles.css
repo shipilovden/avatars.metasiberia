@@ -3,6 +3,12 @@
 :root {
   color-scheme: light;
   font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  --accent-border: #00d9e8;
+  --accent-fill: linear-gradient(180deg, #00e6ef 0%, #00c1d2 100%);
+  --accent-shadow-soft: rgba(0, 217, 232, 0.26);
+  --accent-shadow-strong: rgba(0, 217, 232, 0.42);
+  --accent-tint-soft: rgba(0, 217, 232, 0.14);
+  --accent-tint-strong: rgba(0, 217, 232, 0.2);
 }
 
 * {
@@ -149,7 +155,7 @@ body {
 }
 
 .hair-color-dot--active {
-  box-shadow: 0 0 0 2px #00d9e8, 0 0 0 3px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 0 0 2px var(--accent-border), 0 0 0 3px rgba(0, 0, 0, 0.4);
 }
 
 .stage-toolbar {
@@ -176,6 +182,54 @@ body {
 .locale-toggle:hover {
   transform: translateY(-1px);
   filter: brightness(1.06);
+}
+
+.light-rotation-control {
+  z-index: 8;
+  min-width: clamp(116px, 14vw, 152px);
+  height: 40px;
+  padding: 0 10px;
+  border: 1px solid #191919;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.96);
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  cursor: ew-resize;
+  transition: transform 120ms ease, filter 120ms ease;
+}
+
+.light-rotation-control:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.04);
+}
+
+.light-rotation-control__icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  color: #1d1d1d;
+}
+
+.light-rotation-control__icon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.light-rotation-control__slider {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  accent-color: var(--accent-border);
+}
+
+.light-rotation-control__value {
+  min-width: 34px;
+  font-size: 11px;
+  font-weight: 800;
+  text-align: right;
+  color: #111111;
 }
 
 .paint-toggle-button {
@@ -207,7 +261,7 @@ body {
   padding: 0 14px;
   height: 40px;
   border-radius: 12px;
-  background: linear-gradient(180deg, #00e6ef 0%, #00c1d2 100%);
+  background: var(--accent-fill);
   color: #121212;
   font-size: 20px;
   letter-spacing: 0.02em;
@@ -297,7 +351,7 @@ body {
 }
 
 .paint-section__mini-btn--active {
-  background: linear-gradient(180deg, #ffe081 0%, #ffc84e 100%);
+  background: var(--accent-fill);
 }
 
 .paint-panel-section {
@@ -348,8 +402,8 @@ body {
 }
 
 .paint-panel-file-row--active .paint-panel-file-row__select {
-  border-color: #00d9e8;
-  box-shadow: 0 0 0 1px rgba(0, 217, 232, 0.28);
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 1px var(--accent-shadow-soft);
   background: #fcffff;
 }
 
@@ -497,7 +551,7 @@ body {
 }
 
 .uv-editor__slot-btn--active {
-  background: linear-gradient(180deg, #ffe081 0%, #ffc84e 100%);
+  background: var(--accent-fill);
 }
 
 .uv-editor__canvas-wrap {
@@ -715,9 +769,9 @@ body {
 }
 
 .uv-editor-port__layer--active {
-  border-color: #b7791f;
-  box-shadow: inset 0 0 0 1px rgba(183, 121, 31, 0.18);
-  background: linear-gradient(180deg, rgba(255, 244, 204, 0.94), rgba(255, 233, 177, 0.94));
+  border-color: var(--accent-border);
+  box-shadow: inset 0 0 0 1px var(--accent-shadow-soft);
+  background: linear-gradient(180deg, rgba(0, 230, 239, 0.16), rgba(0, 193, 210, 0.12));
 }
 
 .uv-editor-port__layer-name {
@@ -753,7 +807,7 @@ body {
 }
 
 .uv-editor-port__chip--active {
-  background: linear-gradient(180deg, #f8d167 0%, #f0bb44 100%);
+  background: var(--accent-fill);
 }
 
 .uv-editor-port__preview {
@@ -1065,8 +1119,8 @@ body {
 }
 
 .preset-btn--active {
-  border-color: #00d9e8;
-  box-shadow: 0 0 0 1px rgba(0, 217, 232, 0.42) inset;
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 1px var(--accent-shadow-strong) inset;
 }
 
 .type-tabs {
@@ -1093,7 +1147,7 @@ body {
 }
 
 .tab-btn--active {
-  background: linear-gradient(180deg, #ffe081 0%, #ffc84e 100%);
+  background: var(--accent-fill);
 }
 
 .asset-grid {
@@ -1132,8 +1186,8 @@ body {
 }
 
 .asset-card--active {
-  border-color: #00d9e8;
-  box-shadow: 0 0 0 1px rgba(0, 217, 232, 0.42) inset;
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 1px var(--accent-shadow-strong) inset;
   background: #ffffff;
 }
 
@@ -1265,6 +1319,18 @@ body {
     height: 38px;
   }
 
+  .light-rotation-control {
+    height: 38px;
+    min-width: 108px;
+    padding: 0 8px;
+    gap: 7px;
+  }
+
+  .light-rotation-control__value {
+    min-width: 30px;
+    font-size: 10px;
+  }
+
   .export-modal {
     width: min(92vw, 560px);
     min-height: auto;
@@ -1289,9 +1355,9 @@ body {
   --uv-button-bg: #ffffff;
   --uv-button-border: #191919;
   --uv-button-text: #1c1c1c;
-  --uv-active-border: #00d9e8;
-  --uv-active-shadow: rgba(0, 217, 232, 0.26);
-  --uv-active-fill: linear-gradient(180deg, #ffe081 0%, #ffc84e 100%);
+  --uv-active-border: var(--accent-border);
+  --uv-active-shadow: var(--accent-shadow-soft);
+  --uv-active-fill: var(--accent-fill);
   --uv-danger: #b32727;
   --uv-danger-soft: rgba(179, 39, 39, 0.16);
   --uv-scroll-track: #ececec;
@@ -1717,6 +1783,17 @@ body {
   gap: 6px;
 }
 
+.uv-editor__inspector-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.uv-editor__inspector-stack--active .uv-editor__control-panel:first-child {
+  border-color: var(--uv-active-border);
+  box-shadow: 0 0 0 3px var(--uv-active-shadow);
+}
+
 .uv-editor__slider-row,
 .uv-editor__paint-row {
   display: grid;
@@ -1931,7 +2008,7 @@ body {
 }
 
 .uv-editor__preset-option--active {
-  background: rgba(255, 200, 79, 0.22);
+  background: var(--accent-tint-strong);
   box-shadow: inset 0 0 0 1px var(--uv-active-border);
 }
 
@@ -2097,7 +2174,7 @@ body {
 
 .uv-editor__design-card--active {
   border-color: var(--uv-active-border);
-  background: rgba(255, 200, 79, 0.18);
+  background: var(--accent-tint-soft);
   box-shadow: inset 0 0 0 1px var(--uv-active-border);
 }
 

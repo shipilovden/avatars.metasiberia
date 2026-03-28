@@ -1,0 +1,32 @@
+Options -MultiViews
+DirectoryIndex index.html
+
+<IfModule mod_mime.c>
+  AddType model/gltf-binary .glb
+  AddType model/gltf+json .gltf
+  AddType font/ttf .ttf
+  AddType font/woff .woff
+  AddType font/woff2 .woff2
+</IfModule>
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+
+  RewriteCond %{HTTP_HOST} ^www\.avatars\.metasiberia\.com$ [NC]
+  RewriteRule ^ https://avatars.metasiberia.com%{REQUEST_URI} [R=301,L]
+
+  RewriteCond %{HTTP_HOST} ^(www\.)?mac\.metasiberia\.com$ [NC]
+  RewriteRule ^ https://avatars.metasiberia.com%{REQUEST_URI} [R=301,L]
+
+  RewriteCond %{HTTP_HOST} ^avatars\.metasiberia\.com$ [NC]
+  RewriteCond %{HTTPS} !=on
+  RewriteCond %{HTTP:X-Forwarded-Proto} !https [NC]
+  RewriteRule ^ https://avatars.metasiberia.com%{REQUEST_URI} [R=301,L]
+
+  RewriteRule ^index\.html$ - [L]
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule . - [L]
+  RewriteRule . /index.html [L]
+</IfModule>

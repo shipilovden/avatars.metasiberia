@@ -10,6 +10,7 @@ import { sanitizePrintModeId } from "./components/uv-editor-port/print-mode-pres
 import { sanitizePrintTextureStyle } from "./components/uv-editor-port/print-texture";
 import { AssetSidebar } from "./components/avatar/AssetSidebar";
 import { StagePanel } from "./components/avatar/StagePanel";
+import { SiteSeo } from "./components/seo/SiteSeo";
 import {
   applyAssetToAvatarAssets,
   createAnonymousUser,
@@ -2885,73 +2886,76 @@ function App() {
   const uvEditorProps =
     uvEditorMode === "texture" ? textureUvEditorProps : decalUvEditorProps;
   return (
-    <main className="creator-shell">
-      <StagePanel
-        copy={copy}
-        locale={locale}
-        onToggleLocale={handleToggleLocale}
-        onNext={handleNext}
-        isPaintPanelOpen={isPaintPanelOpen}
-        onTogglePaintPanel={() => setIsPaintPanelOpen((current) => !current)}
-        paintPanelProps={paintPanelProps}
-        showUvEditor={isPaintPanelOpen && uvEditorMode !== null}
-        uvEditorProps={uvEditorProps}
-        avatarExportGroupRef={avatarExportGroupRef}
-        onSceneReady={handleSceneReady}
-        onCanvasPointerReset={handleCanvasPointerReset}
-        onStagePointerDown={handleStagePointerDown}
-        onStagePointerMove={handleStagePointerMove}
-        onStagePointerUp={handleStagePointerUp}
-        selectedPresetBaseModelUrl={selectedPreset?.baseModelUrl || null}
-        composedScene={composedScene}
-        tintByMesh={tintByMesh}
-        idleAnimationUrl={idleAnimationUrl}
-        shouldReplaceTexture={shouldReplaceTexture}
-        replaceTextureUrl={replaceTextureUrlState}
-        replacementSlots={replacementSlots}
-        replaceScale={replaceScale}
-        replaceScaleX={replaceScaleX}
-        replaceScaleY={replaceScaleY}
-        replaceRotationDeg={replaceRotationDeg}
-        isAvatarStatic={isAvatarStatic}
-        isStickerDragging={isStickerDragging}
-        appliedUvDecals={stageUvDecals}
-        appliedUvTextures={stageUvTextures}
-        baseTextureOverrideUrls={paintedBasePreviewBySlot}
-        selectedEyebrowColor={selectedEyebrowColor}
-        decalTextureUrl={decalTextureUrl}
-        stickerTargetMesh={stickerTargetMesh}
-        onAutoStickerPick={handleAutoStickerPick}
-        showColorPanel={showColorPanel}
-        colorPanelLabel={colorPanelLabel}
-        selectedColor={selectedColor}
-        onSelectColor={handleSelectColor}
-        decalUploadInputRef={decalUploadInputRef}
-        textureUploadInputRef={textureUploadInputRef}
-        onUploadByTarget={handleUploadByTarget}
-        isExportModalOpen={isExportModalOpen}
-        exportPreviewUrl={exportPreviewUrl}
-        exportDownloadUrl={exportDownloadUrl}
-        exportFileName={exportFileName}
-        onCloseExportModal={() => setIsExportModalOpen(false)}
-      />
-      <AssetSidebar
-        copy={copy}
-        selectedGender={selectedGender}
-        onSelectGender={setSelectedGender}
-        presetOptions={presetOptions}
-        selectedPresetId={selectedPresetId}
-        onSelectPresetId={setSelectedPresetId}
-        activeType={activeType}
-        onSelectType={setActiveType}
-        typeLabels={typeLabels}
-        selectedAssetId={selectedAssetId}
-        onClearType={handleClearType}
-        visibleAssets={visibleAssets}
-        localItemsByAsset={localItemsByAsset}
-        onSelectAsset={handleSelectAsset}
-      />
-    </main>
+    <>
+      <SiteSeo locale={locale} />
+      <main className="creator-shell">
+        <StagePanel
+          copy={copy}
+          locale={locale}
+          onToggleLocale={handleToggleLocale}
+          onNext={handleNext}
+          isPaintPanelOpen={isPaintPanelOpen}
+          onTogglePaintPanel={() => setIsPaintPanelOpen((current) => !current)}
+          paintPanelProps={paintPanelProps}
+          showUvEditor={isPaintPanelOpen && uvEditorMode !== null}
+          uvEditorProps={uvEditorProps}
+          avatarExportGroupRef={avatarExportGroupRef}
+          onSceneReady={handleSceneReady}
+          onCanvasPointerReset={handleCanvasPointerReset}
+          onStagePointerDown={handleStagePointerDown}
+          onStagePointerMove={handleStagePointerMove}
+          onStagePointerUp={handleStagePointerUp}
+          selectedPresetBaseModelUrl={selectedPreset?.baseModelUrl || null}
+          composedScene={composedScene}
+          tintByMesh={tintByMesh}
+          idleAnimationUrl={idleAnimationUrl}
+          shouldReplaceTexture={shouldReplaceTexture}
+          replaceTextureUrl={replaceTextureUrlState}
+          replacementSlots={replacementSlots}
+          replaceScale={replaceScale}
+          replaceScaleX={replaceScaleX}
+          replaceScaleY={replaceScaleY}
+          replaceRotationDeg={replaceRotationDeg}
+          isAvatarStatic={isAvatarStatic}
+          isStickerDragging={isStickerDragging}
+          appliedUvDecals={stageUvDecals}
+          appliedUvTextures={stageUvTextures}
+          baseTextureOverrideUrls={paintedBasePreviewBySlot}
+          selectedEyebrowColor={selectedEyebrowColor}
+          decalTextureUrl={decalTextureUrl}
+          stickerTargetMesh={stickerTargetMesh}
+          onAutoStickerPick={handleAutoStickerPick}
+          showColorPanel={showColorPanel}
+          colorPanelLabel={colorPanelLabel}
+          selectedColor={selectedColor}
+          onSelectColor={handleSelectColor}
+          decalUploadInputRef={decalUploadInputRef}
+          textureUploadInputRef={textureUploadInputRef}
+          onUploadByTarget={handleUploadByTarget}
+          isExportModalOpen={isExportModalOpen}
+          exportPreviewUrl={exportPreviewUrl}
+          exportDownloadUrl={exportDownloadUrl}
+          exportFileName={exportFileName}
+          onCloseExportModal={() => setIsExportModalOpen(false)}
+        />
+        <AssetSidebar
+          copy={copy}
+          selectedGender={selectedGender}
+          onSelectGender={setSelectedGender}
+          presetOptions={presetOptions}
+          selectedPresetId={selectedPresetId}
+          onSelectPresetId={setSelectedPresetId}
+          activeType={activeType}
+          onSelectType={setActiveType}
+          typeLabels={typeLabels}
+          selectedAssetId={selectedAssetId}
+          onClearType={handleClearType}
+          visibleAssets={visibleAssets}
+          localItemsByAsset={localItemsByAsset}
+          onSelectAsset={handleSelectAsset}
+        />
+      </main>
+    </>
   );}
 
 useGLTF.preload(IDLE_ANIMATION_URL.male);

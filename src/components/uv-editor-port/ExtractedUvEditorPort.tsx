@@ -226,6 +226,8 @@ type EditorHistorySnapshot = {
   rotationDeg: number;
 };
 
+type InspectorTab = "layer" | "mask" | "effects";
+
 const DEFAULT_VIEWPORT: ViewportState = { zoom: 1, panX: 0, panY: 0 };
 const MIN_ZOOM = 0.6;
 const MAX_ZOOM = 10;
@@ -565,6 +567,75 @@ const applyPrintTextureToCanvas = (canvas: HTMLCanvasElement, printTexture: Prin
 
   context.putImageData(imageData, 0, 0);
   return canvas;
+};
+
+const createMaskPreviewCanvas = ({
+  currentImage,
+  sourceImage,
+}: {
+  currentImage: CanvasImageSource;
+  sourceImage: CanvasImageSource;
+}) => {
+  if (typeof document === "undefined") {
+    return null;
+  }
+
+  const currentCanvas = cloneCanvasImageSourceToCanvas(currentImage, {
+    upscaleTinyTextures: true,
+  });
+  const sourceCanvas = cloneCanvasImageSourceToCanvas(sourceImage, {
+    upscaleTinyTextures: true,
+  });
+  if (!currentCanvas || !sourceCanvas) {
+    return null;
+  }
+
+  const { width, height } = currentCanvas;
+  if (width <= 0 || height <= 0) {
+    return null;
+  }
+
+  let normalizedSourceCanvas = sourceCanvas;
+  if (sourceCanvas.width !== width || sourceCanvas.height !== height) {
+    const resizedSourceCanvas = document.createElement("canvas");
+    resizedSourceCanvas.width = width;
+    resizedSourceCanvas.height = height;
+    const resizedSourceContext = resizedSourceCanvas.getContext("2d");
+    if (!resizedSourceContext) {
+      return null;
+    }
+    resizedSourceContext.drawImage(sourceCanvas, 0, 0, width, height);
+    normalizedSourceCanvas = resizedSourceCanvas;
+  }
+
+  const currentContext = currentCanvas.getContext("2d", { willReadFrequently: true });
+  const sourceContext = normalizedSourceCanvas.getContext("2d", { willReadFrequently: true });
+  if (!currentContext || !sourceContext) {
+    return null;
+  }
+
+  const currentImageData = currentContext.getImageData(0, 0, width, height);
+  const sourceImageData = sourceContext.getImageData(0, 0, width, height);
+  const currentData = currentImageData.data;
+  const sourceData = sourceImageData.data;
+
+  for (let index = 0; index < currentData.length; index += 4) {
+    const sourceAlpha = sourceData[index + 3];
+    if (sourceAlpha <= 0) {
+      currentData[index + 3] = 0;
+      continue;
+    }
+
+    const currentAlpha = currentData[index + 3];
+    const visibility = clamp(currentAlpha / Math.max(1, sourceAlpha), 0, 1);
+    currentData[index] = Math.round(18 + (46 - 18) * (1 - visibility) + 20 * visibility);
+    currentData[index + 1] = Math.round(24 + 160 * visibility);
+    currentData[index + 2] = Math.round(34 + 212 * visibility);
+    currentData[index + 3] = Math.max(88, sourceAlpha);
+  }
+
+  currentContext.putImageData(currentImageData, 0, 0);
+  return currentCanvas;
 };
 
 const createTextDecalTexture = ({
@@ -1360,8 +1431,8 @@ const drawActiveLayerOverlay = ({
   });
 
   context.save();
-  context.strokeStyle = activeTool === "crop" ? "rgba(255, 200, 78, 0.98)" : "rgba(0, 217, 232, 0.98)";
-  context.fillStyle = activeTool === "crop" ? "#ffc84e" : "#00d9e8";
+  context.strokeStyle = "rgba(0, 217, 232, 0.98)";
+  context.fillStyle = "#00d9e8";
   context.lineWidth = 1.5;
 
   context.beginPath();
@@ -2362,6 +2433,7 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     ...DEFAULT_PRINT_TEXTURE_STYLE,
   }));
   const [showMaskPreview, setShowMaskPreview] = useState(false);
+  const [activeInspectorTab, setActiveInspectorTab] = useState<InspectorTab>("layer");
   const [snapEnabled, setSnapEnabled] = useState(false);
   const [soloLayerId, setSoloLayerId] = useState<string | null>(null);
   const [layerOverrides, setLayerOverrides] = useState<Record<string, LayerOverride>>({});
@@ -2375,9 +2447,14 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
   const canvasWrapRef = useRef<HTMLDivElement | null>(null);
   const brushPresetMenuRef = useRef<HTMLDivElement | null>(null);
   const selectedBrushPresetOptionRef = useRef<HTMLButtonElement | null>(null);
+  const layerInspectorSectionRef = useRef<HTMLDivElement | null>(null);
+  const maskInspectorSectionRef = useRef<HTMLDivElement | null>(null);
+  const effectsInspectorSectionRef = useRef<HTMLDivElement | null>(null);
   const interactionRef = useRef<InteractionState>(null);
   const baseLayerCanvasRef = useRef<Record<string, HTMLCanvasElement>>({});
+  const baseLayerSourceCanvasRef = useRef<Record<string, HTMLCanvasElement>>({});
   const editableLayerCanvasRef = useRef<Record<string, HTMLCanvasElement>>({});
+  const editableLayerSourceCanvasRef = useRef<Record<string, HTMLCanvasElement>>({});
   const baseLayerModelUrlRef = useRef<Record<string, string>>({});
   const previousBaseTextureOverrideUrlRef = useRef<string | null | undefined>(undefined);
   const latestInteractiveLayerIdRef = useRef<string | null>(null);
@@ -2445,7 +2522,9 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     setCropPreview(null);
     setUndoStack([]);
     setRedoStack([]);
+    baseLayerSourceCanvasRef.current = {};
     editableLayerCanvasRef.current = {};
+    editableLayerSourceCanvasRef.current = {};
   }, [
     activeSlot,
     modelUrl,
@@ -2620,7 +2699,29 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     }
     return layer.textureUrl ? images[layer.textureUrl] || null : null;
   };
+  const getLayerSourceImage = (layer: UvPortLayer | null) => {
+    if (!layer) {
+      return null;
+    }
+    if (layer.kind === "base" && layer.meshName) {
+      return baseLayerSourceCanvasRef.current[layer.meshName] || null;
+    }
+    if (layer.kind === "draft" || layer.kind === "decal") {
+      return editableLayerSourceCanvasRef.current[layer.id] || null;
+    }
+    return null;
+  };
   const selectedLayerPreviewImage = getLayerPreviewImage(selectedLayer);
+  const selectedLayerSourceImage = getLayerSourceImage(selectedLayer);
+  const selectedMaskPreviewImage = useMemo(() => {
+    if (!showMaskPreview || !selectedLayerPreviewImage || !selectedLayerSourceImage) {
+      return null;
+    }
+    return createMaskPreviewCanvas({
+      currentImage: selectedLayerPreviewImage,
+      sourceImage: selectedLayerSourceImage,
+    });
+  }, [selectedLayerPreviewImage, selectedLayerSourceImage, showMaskPreview]);
   const activeBrushPresetImage =
     activeBrushPreset?.shape === "mask" && activeBrushPreset.maskSrc
       ? images[activeBrushPreset.maskSrc] || null
@@ -3090,9 +3191,14 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     const showUvLayout =
       (uvLayoutLayer?.visible ?? true) && (!soloLayerId || soloLayerId === uvLayoutLayer?.id);
 
-    if (showBaseLayer && basePreviewImage) {
+    const basePreviewImageForCanvas =
+      showMaskPreview && selectedLayer?.id === baseLayer?.id && selectedMaskPreviewImage
+        ? selectedMaskPreviewImage
+        : basePreviewImage;
+
+    if (showBaseLayer && basePreviewImageForCanvas) {
       context.globalAlpha = clamp(baseLayer?.opacity ?? 0.96, 0, 1);
-      context.drawImage(basePreviewImage, originX, originY, viewSize, viewSize);
+      context.drawImage(basePreviewImageForCanvas, originX, originY, viewSize, viewSize);
       context.globalAlpha = 1;
     }
 
@@ -3134,7 +3240,10 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     context.strokeRect(originX, originY, viewSize, viewSize);
 
     for (const layer of visiblePreviewLayers) {
-      const image = images[layer.textureUrl!];
+      const image =
+        showMaskPreview && layer.id === selectedLayer?.id && selectedMaskPreviewImage
+          ? selectedMaskPreviewImage
+          : images[layer.textureUrl!];
       if (!image) {
         continue;
       }
@@ -3157,12 +3266,12 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
       selectedLayer.kind !== "base" &&
       selectedLayer.kind !== "uv-layout" &&
       selectedLayer.uv &&
-      selectedLayerPreviewImage
+      (selectedMaskPreviewImage || selectedLayerPreviewImage)
     ) {
       drawActiveLayerOverlay({
         context,
         layer: selectedLayer,
-        image: selectedLayerPreviewImage,
+        image: selectedMaskPreviewImage || selectedLayerPreviewImage,
         size: canvasSize,
         viewport,
         activeTool,
@@ -3199,6 +3308,7 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     selectedLayer?.textStyle,
     selectedLayer?.textureUrl,
     selectedLayer?.uv,
+    selectedMaskPreviewImage,
     soloLayerId,
     uvLayoutLayer?.id,
     uvLayoutLayer?.opacity,
@@ -3228,6 +3338,7 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
 
   const syncBaseLayerCanvases = (nextTextureUrls: Record<string, string>) => {
     const nextCanvases: Record<string, HTMLCanvasElement> = {};
+    const nextSourceCanvases: Record<string, HTMLCanvasElement> = {};
     for (const [slot, textureUrl] of Object.entries(nextTextureUrls)) {
       const cachedImage = textureUrl ? images[textureUrl] || null : null;
       const restoredCanvas = cloneCanvasImageSourceToCanvas(cachedImage, {
@@ -3235,9 +3346,16 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
       });
       if (restoredCanvas) {
         nextCanvases[slot] = restoredCanvas;
+        const sourceClone = cloneCanvasImageSourceToCanvas(restoredCanvas, {
+          upscaleTinyTextures: true,
+        });
+        if (sourceClone) {
+          nextSourceCanvases[slot] = sourceClone;
+        }
       }
     }
     baseLayerCanvasRef.current = nextCanvases;
+    baseLayerSourceCanvasRef.current = nextSourceCanvases;
   };
 
   const applyHistorySnapshot = (snapshot: EditorHistorySnapshot) => {
@@ -3249,6 +3367,8 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     setBaseLayerTextureUrls({ ...snapshot.baseLayerTextureUrls });
     setPaintedBaseSlots({ ...snapshot.paintedBaseSlots });
     syncBaseLayerCanvases(snapshot.baseLayerTextureUrls);
+    editableLayerCanvasRef.current = {};
+    editableLayerSourceCanvasRef.current = {};
     onDraftTextureUrlChange?.(snapshot.draftTextureUrl);
     onDraftFileNameChange?.(snapshot.draftFileName);
     onDraftUvChange([snapshot.draftUv[0], snapshot.draftUv[1]]);
@@ -3585,10 +3705,30 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     }
 
     baseLayerCanvasRef.current[activeSlot] = nextCanvas;
+    if (!baseLayerSourceCanvasRef.current[activeSlot]) {
+      const sourceClone =
+        cloneCanvasImageSourceToCanvas(sourceImage, { upscaleTinyTextures: true }) ||
+        cloneCanvasImageSourceToCanvas(nextCanvas, { upscaleTinyTextures: true });
+      if (sourceClone) {
+        baseLayerSourceCanvasRef.current[activeSlot] = sourceClone;
+      }
+    }
     return nextCanvas;
   };
 
-  const syncEditableLayerTexture = (layer: UvPortLayer, canvas: HTMLCanvasElement) => {
+  const syncEditableLayerTexture = (
+    layer: UvPortLayer,
+    canvas: HTMLCanvasElement,
+    options?: { syncSource?: boolean }
+  ) => {
+    if (options?.syncSource !== false) {
+      const sourceClone = cloneCanvasImageSourceToCanvas(canvas, {
+        upscaleTinyTextures: true,
+      });
+      if (sourceClone) {
+        editableLayerSourceCanvasRef.current[layer.id] = sourceClone;
+      }
+    }
     const dataUrl = canvas.toDataURL("image/png");
     setImages((current) => ({
       ...current,
@@ -3758,13 +3898,157 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     }
 
     editableLayerCanvasRef.current[layer.id] = nextCanvas;
+    if (!editableLayerSourceCanvasRef.current[layer.id]) {
+      const sourceClone =
+        cloneCanvasImageSourceToCanvas(sourceImage, { upscaleTinyTextures: true }) ||
+        cloneCanvasImageSourceToCanvas(nextCanvas, { upscaleTinyTextures: true });
+      if (sourceClone) {
+        editableLayerSourceCanvasRef.current[layer.id] = sourceClone;
+      }
+    }
     return nextCanvas;
   };
 
-  const syncPaintedBaseLayer = (slot: string, canvas: HTMLCanvasElement) => {
+  const syncPaintedBaseLayer = (
+    slot: string,
+    canvas: HTMLCanvasElement,
+    options?: { syncSource?: boolean }
+  ) => {
+    if (options?.syncSource !== false) {
+      const sourceClone = cloneCanvasImageSourceToCanvas(canvas, {
+        upscaleTinyTextures: true,
+      });
+      if (sourceClone) {
+        baseLayerSourceCanvasRef.current[slot] = sourceClone;
+      }
+    }
     const dataUrl = canvas.toDataURL("image/png");
     setBaseLayerTextureUrls((current) => ({ ...current, [slot]: dataUrl }));
     setPaintedBaseSlots((current) => ({ ...current, [slot]: true }));
+  };
+
+  const paintMaskStampToCanvas = ({
+    targetCanvas,
+    sourceCanvas,
+    x,
+    y,
+    radius,
+    softness,
+    reveal,
+    maskImage,
+  }: {
+    targetCanvas: HTMLCanvasElement;
+    sourceCanvas: HTMLCanvasElement;
+    x: number;
+    y: number;
+    radius: number;
+    softness: number;
+    reveal: boolean;
+    maskImage?: CanvasImageSource | null;
+  }) => {
+    const targetContext = targetCanvas.getContext("2d");
+    const sourceContext = sourceCanvas.getContext("2d");
+    if (!targetContext || !sourceContext) {
+      return;
+    }
+
+    const clampedRadius = Math.max(0.5, radius);
+    let drawWidth = Math.max(1, Math.ceil(clampedRadius * 2));
+    let drawHeight = drawWidth;
+    let drawX = x - drawWidth * 0.5;
+    let drawY = y - drawHeight * 0.5;
+
+    if (maskImage) {
+      const sourceSize = getCanvasImageSize(maskImage);
+      if (!sourceSize) {
+        return;
+      }
+      const diameter = clampedRadius * 2;
+      const scale = diameter / Math.max(sourceSize.width, sourceSize.height);
+      drawWidth = Math.max(1, Math.round(sourceSize.width * scale));
+      drawHeight = Math.max(1, Math.round(sourceSize.height * scale));
+      drawX = x - drawWidth * 0.5;
+      drawY = y - drawHeight * 0.5;
+    }
+
+    const coverageCanvas = ensureTintedBrushCanvas(drawWidth, drawHeight);
+    const coverageContext = coverageCanvas?.getContext("2d");
+    if (!coverageCanvas || !coverageContext) {
+      return;
+    }
+
+    coverageContext.clearRect(0, 0, drawWidth, drawHeight);
+    coverageContext.filter = "none";
+
+    if (maskImage) {
+      const blurPx = softness > 0 ? Math.max(0, softness * Math.max(drawWidth, drawHeight) * 0.04) : 0;
+      coverageContext.save();
+      coverageContext.filter = blurPx > 0.25 ? `blur(${blurPx}px)` : "none";
+      coverageContext.drawImage(maskImage, 0, 0, drawWidth, drawHeight);
+      coverageContext.globalCompositeOperation = "source-in";
+      coverageContext.fillStyle = "#ffffff";
+      coverageContext.fillRect(0, 0, drawWidth, drawHeight);
+      coverageContext.restore();
+      coverageContext.globalCompositeOperation = "source-over";
+      coverageContext.filter = "none";
+    } else {
+      const innerRadius = clampedRadius * (1 - softness);
+      const gradient = coverageContext.createRadialGradient(
+        drawWidth * 0.5,
+        drawHeight * 0.5,
+        innerRadius,
+        drawWidth * 0.5,
+        drawHeight * 0.5,
+        clampedRadius
+      );
+      gradient.addColorStop(0, "rgba(255, 255, 255, 1)");
+      gradient.addColorStop(Math.min(0.98, innerRadius / clampedRadius), "rgba(255, 255, 255, 1)");
+      gradient.addColorStop(1, "rgba(255, 255, 255, 0)");
+      coverageContext.fillStyle = gradient;
+      coverageContext.beginPath();
+      coverageContext.arc(drawWidth * 0.5, drawHeight * 0.5, clampedRadius, 0, Math.PI * 2);
+      coverageContext.fill();
+    }
+
+    const drawLeft = Math.floor(drawX);
+    const drawTop = Math.floor(drawY);
+    const left = Math.max(0, drawLeft);
+    const top = Math.max(0, drawTop);
+    const right = Math.min(targetCanvas.width, Math.ceil(drawX + drawWidth));
+    const bottom = Math.min(targetCanvas.height, Math.ceil(drawY + drawHeight));
+    if (right <= left || bottom <= top) {
+      return;
+    }
+
+    const width = right - left;
+    const height = bottom - top;
+    const coverageOffsetX = Math.max(0, left - drawLeft);
+    const coverageOffsetY = Math.max(0, top - drawTop);
+    const coverageData = coverageContext.getImageData(coverageOffsetX, coverageOffsetY, width, height).data;
+    const sourceImageData = sourceContext.getImageData(left, top, width, height);
+    const targetImageData = targetContext.getImageData(left, top, width, height);
+    const sourceData = sourceImageData.data;
+    const targetData = targetImageData.data;
+
+    for (let index = 0; index < targetData.length; index += 4) {
+      const coverage = coverageData[index + 3] / 255;
+      if (coverage <= 0) {
+        continue;
+      }
+
+      const sourceAlpha = sourceData[index + 3];
+      const currentAlpha = targetData[index + 3];
+      const nextAlpha = reveal
+        ? Math.round(currentAlpha + (sourceAlpha - currentAlpha) * coverage)
+        : Math.round(currentAlpha * (1 - coverage));
+
+      targetData[index] = sourceData[index];
+      targetData[index + 1] = sourceData[index + 1];
+      targetData[index + 2] = sourceData[index + 2];
+      targetData[index + 3] = nextAlpha;
+    }
+
+    targetContext.putImageData(targetImageData, left, top);
   };
 
   const fillBaseLayerWithColor = () => {
@@ -3833,27 +4117,43 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     const steps = previousPoint ? Math.max(1, Math.ceil(distance / step)) : 1;
     const softness =
       activeBrushPreset?.id === "hard-round" ? 0 : clamp(brushSoftness / 100, 0, 1);
+    const sourceCanvas = activeSlot ? baseLayerSourceCanvasRef.current[activeSlot] || null : null;
 
     context.save();
     for (let index = 0; index < steps; index += 1) {
       const progress = steps === 1 ? 1 : index / (steps - 1);
       const stampX = previousPoint ? previousPoint.x + (point.x - previousPoint.x) * progress : point.x;
       const stampY = previousPoint ? previousPoint.y + (point.y - previousPoint.y) * progress : point.y;
-      paintBrushStamp({
-        context,
-        x: stampX,
-        y: stampY,
-        color: brushColor,
-        isEraser: activeTool === "eraser",
-        paintTarget,
-        radius: brushSize * 0.5,
-        softness,
-        maskImage: activeBrushPreset?.shape === "mask" ? activeBrushPresetImage : null,
-      });
+      if (paintTarget === "mask" && sourceCanvas) {
+        paintMaskStampToCanvas({
+          targetCanvas: canvas,
+          sourceCanvas,
+          x: stampX,
+          y: stampY,
+          radius: brushSize * 0.5,
+          softness,
+          reveal: activeTool === "eraser",
+          maskImage: activeBrushPreset?.shape === "mask" ? activeBrushPresetImage : null,
+        });
+      } else {
+        paintBrushStamp({
+          context,
+          x: stampX,
+          y: stampY,
+          color: brushColor,
+          isEraser: activeTool === "eraser",
+          paintTarget,
+          radius: brushSize * 0.5,
+          softness,
+          maskImage: activeBrushPreset?.shape === "mask" ? activeBrushPresetImage : null,
+        });
+      }
     }
     context.restore();
 
-    syncPaintedBaseLayer(activeSlot, canvas);
+    syncPaintedBaseLayer(activeSlot, canvas, {
+      syncSource: paintTarget !== "mask",
+    });
     return point;
   };
 
@@ -3878,27 +4178,43 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     const steps = previousPoint ? Math.max(1, Math.ceil(distance / step)) : 1;
     const softness =
       activeBrushPreset?.id === "hard-round" ? 0 : clamp(brushSoftness / 100, 0, 1);
+    const sourceCanvas = editableLayerSourceCanvasRef.current[layer.id] || null;
 
     context.save();
     for (let index = 0; index < steps; index += 1) {
       const progress = steps === 1 ? 1 : index / (steps - 1);
       const stampX = previousPoint ? previousPoint.x + (point.x - previousPoint.x) * progress : point.x;
       const stampY = previousPoint ? previousPoint.y + (point.y - previousPoint.y) * progress : point.y;
-      paintBrushStamp({
-        context,
-        x: stampX,
-        y: stampY,
-        color: brushColor,
-        isEraser: activeTool === "eraser",
-        paintTarget: "image",
-        radius: brushSize * 0.5,
-        softness,
-        maskImage: activeBrushPreset?.shape === "mask" ? activeBrushPresetImage : null,
-      });
+      if (paintTarget === "mask" && sourceCanvas) {
+        paintMaskStampToCanvas({
+          targetCanvas: canvas,
+          sourceCanvas,
+          x: stampX,
+          y: stampY,
+          radius: brushSize * 0.5,
+          softness,
+          reveal: activeTool === "eraser",
+          maskImage: activeBrushPreset?.shape === "mask" ? activeBrushPresetImage : null,
+        });
+      } else {
+        paintBrushStamp({
+          context,
+          x: stampX,
+          y: stampY,
+          color: brushColor,
+          isEraser: activeTool === "eraser",
+          paintTarget: "image",
+          radius: brushSize * 0.5,
+          softness,
+          maskImage: activeBrushPreset?.shape === "mask" ? activeBrushPresetImage : null,
+        });
+      }
     }
     context.restore();
 
-    syncEditableLayerTexture(layer, canvas);
+    syncEditableLayerTexture(layer, canvas, {
+      syncSource: paintTarget !== "mask",
+    });
     return point;
   };
 
@@ -4431,6 +4747,13 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
   const isTextCreationAvailable = true;
   const canCreateTextLayer = Boolean(onCreateGeneratedDecal) && Boolean(textValue.trim());
   const canCreateDesignLayer = Boolean(onCreateGeneratedDecal);
+  const canRenameSelected = Boolean(selectedLayer && selectedLayer.kind !== "uv-layout");
+  const canToggleSelectedVisibility = Boolean(selectedLayer);
+  const canToggleSelectedLock = Boolean(selectedLayer);
+  const canEditSelectedMask = Boolean(
+    selectedLayer &&
+      (selectedLayer.kind === "base" || selectedLayer.kind === "draft" || selectedLayer.kind === "decal")
+  );
 
   const getBaseLayerId = () =>
     renderLayers.find((layer) => layer.kind === "base" && layer.meshName === activeSlot)?.id ||
@@ -4930,9 +5253,121 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
     exportCanvasAsPng(canvasRef.current, `uv-preview-${activeSlot || "mesh"}.png`);
   };
 
+  const toggleSelectedVisibility = () => {
+    if (!selectedLayer) {
+      return;
+    }
+    commitLayerPatch(selectedLayer.id, { visible: !selectedLayer.visible });
+  };
+
+  const toggleSelectedLock = () => {
+    if (!selectedLayer) {
+      return;
+    }
+    commitLayerPatch(selectedLayer.id, { locked: !selectedLayer.locked });
+  };
+
+  const getSelectedEditableCanvasState = () => {
+    if (!selectedLayer || selectedLayer.kind === "uv-layout") {
+      return null;
+    }
+
+    if (selectedLayer.kind === "base") {
+      if (!activeSlot) {
+        return null;
+      }
+
+      const canvas = ensureEditableBaseCanvas();
+      const sourceCanvas = baseLayerSourceCanvasRef.current[activeSlot] || null;
+      if (!canvas || !sourceCanvas) {
+        return null;
+      }
+
+      return {
+        canvas,
+        sourceCanvas,
+        sync: (nextCanvas: HTMLCanvasElement, syncSource = false) =>
+          syncPaintedBaseLayer(activeSlot, nextCanvas, { syncSource }),
+      };
+    }
+
+    const canvas = ensureEditableLayerCanvas(selectedLayer);
+    const sourceCanvas = editableLayerSourceCanvasRef.current[selectedLayer.id] || null;
+    if (!canvas || !sourceCanvas) {
+      return null;
+    }
+
+    return {
+      canvas,
+      sourceCanvas,
+      sync: (nextCanvas: HTMLCanvasElement, syncSource = false) =>
+        syncEditableLayerTexture(selectedLayer, nextCanvas, { syncSource }),
+    };
+  };
+
+  const handleResetSelectedMask = () => {
+    const selectedCanvasState = getSelectedEditableCanvasState();
+    if (!selectedCanvasState) {
+      return;
+    }
+
+    pushHistorySnapshot();
+    const { canvas, sourceCanvas, sync } = selectedCanvasState;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      return;
+    }
+
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(sourceCanvas, 0, 0, canvas.width, canvas.height);
+    sync(canvas, false);
+  };
+
+  const handleInvertSelectedMask = () => {
+    const selectedCanvasState = getSelectedEditableCanvasState();
+    if (!selectedCanvasState) {
+      return;
+    }
+
+    pushHistorySnapshot();
+    const { canvas, sourceCanvas, sync } = selectedCanvasState;
+    const context = canvas.getContext("2d");
+    const sourceContext = sourceCanvas.getContext("2d");
+    if (!context || !sourceContext) {
+      return;
+    }
+
+    const targetImageData = context.getImageData(0, 0, canvas.width, canvas.height);
+    const sourceImageData = sourceContext.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
+    const targetData = targetImageData.data;
+    const sourceData = sourceImageData.data;
+
+    for (let index = 0; index < targetData.length; index += 4) {
+      const sourceAlpha = sourceData[index + 3];
+      const currentAlpha = targetData[index + 3];
+      targetData[index] = sourceData[index];
+      targetData[index + 1] = sourceData[index + 1];
+      targetData[index + 2] = sourceData[index + 2];
+      targetData[index + 3] = Math.max(0, sourceAlpha - currentAlpha);
+    }
+
+    context.putImageData(targetImageData, 0, 0);
+    sync(canvas, false);
+  };
+
   const handleSelectBrushPreset = (presetId: string) => {
     setBrushPresetId(presetId);
     setIsBrushPresetMenuOpen(false);
+  };
+
+  const scrollInspectorSectionIntoView = (tabId: InspectorTab) => {
+    const targetSection =
+      tabId === "layer"
+        ? layerInspectorSectionRef.current
+        : tabId === "mask"
+          ? maskInspectorSectionRef.current
+          : effectsInspectorSectionRef.current;
+    targetSection?.scrollIntoView({ behavior: "smooth", block: "start", inline: "nearest" });
   };
 
   const canUndo = undoStack.length > 0;
@@ -5111,6 +5546,52 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
               </div>
 
               <div className="uv-editor__controls">
+                <div className="uv-editor__control-panel uv-editor__control-panel--tabs">
+                  <div className="uv-editor__control-group">
+                    <div className="uv-editor__control-label">
+                      {locale.isRussian ? "Инспектор" : "Inspector"}
+                    </div>
+                    <div className="uv-editor__chip-row">
+                      {([
+                        ["layer", locale.isRussian ? "Слой" : "Layer"],
+                        ["mask", locale.isRussian ? "Маска" : "Mask"],
+                        ["effects", locale.isRussian ? "Эффекты" : "Effects"],
+                      ] as [InspectorTab, string][]).map(([tabId, label]) => (
+                        <button
+                          key={tabId}
+                          type="button"
+                          className={`uv-editor__tool uv-editor__tool--secondary${
+                            activeInspectorTab === tabId ? " uv-editor__tool--active" : ""
+                          }`}
+                          onClick={() => {
+                            setActiveInspectorTab(tabId);
+                            if (
+                              tabId === "mask" &&
+                              activeTool !== "brush" &&
+                              activeTool !== "eraser" &&
+                              activeTool !== "eyedropper"
+                            ) {
+                              setActiveTool("brush");
+                            }
+                            if (tabId === "mask") {
+                              setPaintTarget("mask");
+                            }
+                            scrollInspectorSectionIntoView(tabId);
+                          }}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div
+                  ref={layerInspectorSectionRef}
+                  className={`uv-editor__inspector-stack${
+                    activeInspectorTab === "layer" ? " uv-editor__inspector-stack--active" : ""
+                  }`}
+                >
                 <div className="uv-editor__control-panel uv-editor__control-panel--meta">
                   {extractedControls?.onSwitchMode ? (
                     <div className="uv-editor__control-group">
@@ -5279,6 +5760,201 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
                   </div>
                 </div>
 
+                {false ? (
+                <div className="uv-editor__control-panel uv-editor__control-panel--actions">
+                  <div className="uv-editor__control-group">
+                    <div className="uv-editor__control-label">
+                      {locale.isRussian ? "Быстрые действия" : "Quick actions"}
+                    </div>
+                    <div className="uv-editor__quick-grid">
+                      <button
+                        type="button"
+                        className={`uv-editor__tool uv-editor__tool--secondary${
+                          visibleSelected ? " uv-editor__tool--active" : ""
+                        }`}
+                        {...getTooltipProps(locale.toggleVisibilityTooltip)}
+                        onClick={toggleSelectedVisibility}
+                        disabled={!canToggleSelectedVisibility}
+                      >
+                        {visibleSelected
+                          ? locale.clearSlot
+                          : locale.isRussian
+                            ? "Показать"
+                            : "Show"}
+                      </button>
+                      <button
+                        type="button"
+                        className={`uv-editor__tool uv-editor__tool--secondary${
+                          isLockedSelected ? " uv-editor__tool--active" : ""
+                        }`}
+                        {...getTooltipProps(isLockedSelected ? locale.unlockHint : locale.lockHint)}
+                        onClick={toggleSelectedLock}
+                        disabled={!canToggleSelectedLock}
+                      >
+                        {isLockedSelected ? locale.unlock : locale.lock}
+                      </button>
+                      <button
+                        type="button"
+                        className="uv-editor__tool uv-editor__tool--secondary"
+                        {...getTooltipProps(locale.centerHint)}
+                        onClick={centerSelected}
+                        disabled={!canTransformSelected}
+                      >
+                        {locale.center}
+                      </button>
+                      <button
+                        type="button"
+                        className="uv-editor__tool uv-editor__tool--secondary"
+                        {...getTooltipProps(locale.fitLayerHint)}
+                        onClick={fitSelected}
+                        disabled={!canTransformSelected}
+                      >
+                        {locale.fitLayer}
+                      </button>
+                      <button
+                        type="button"
+                        className="uv-editor__tool uv-editor__tool--secondary"
+                        {...getTooltipProps(locale.renameHint)}
+                        onClick={handleRenameLayer}
+                        disabled={!canRenameSelected}
+                      >
+                        {locale.rename}
+                      </button>
+                      <button
+                        type="button"
+                        className="uv-editor__tool uv-editor__tool--secondary"
+                        {...getTooltipProps(locale.duplicateHint)}
+                        onClick={handleDuplicateLayer}
+                        disabled={!canDuplicateSelected}
+                      >
+                        {locale.duplicate}
+                      </button>
+                      <button
+                        type="button"
+                        className="uv-editor__tool uv-editor__tool--secondary"
+                        {...getTooltipProps(locale.resetHint)}
+                        onClick={resetSelected}
+                      >
+                        {locale.reset}
+                      </button>
+                      <button
+                        type="button"
+                        className="uv-editor__tool uv-editor__tool--secondary"
+                        {...getTooltipProps(locale.exportPngHint)}
+                        onClick={handleExportPng}
+                      >
+                        PNG
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                ) : null}
+                </div>
+
+                <div
+                  ref={maskInspectorSectionRef}
+                  className={`uv-editor__inspector-stack${
+                    activeInspectorTab === "mask" ? " uv-editor__inspector-stack--active" : ""
+                  }`}
+                >
+                <div className="uv-editor__control-panel uv-editor__control-panel--mask">
+                  <div className="uv-editor__control-group">
+                    <div className="uv-editor__control-label">
+                      {locale.isRussian ? "Маска слоя" : "Layer mask"}
+                    </div>
+                    <div className="uv-editor__selected-target">
+                      {selectedLayer?.name || locale.baseMap}
+                    </div>
+                    <div className="uv-editor__subhint">
+                      {canEditSelectedMask
+                        ? locale.isRussian
+                          ? "Кисть скрывает, ластик возвращает видимость из сохранённого исходника текущего слоя."
+                          : "Brush hides, eraser restores visibility from the preserved source of the current layer."
+                        : locale.isRussian
+                          ? "Выберите базовую карту, черновик или декаль, чтобы редактировать маску."
+                          : "Select a base map, draft, or decal layer to edit its mask."}
+                    </div>
+                  </div>
+
+                  {canEditSelectedMask ? (
+                    <>
+                      <div className="uv-editor__control-group">
+                        <div className="uv-editor__control-label">{locale.paintTo}</div>
+                        <div className="uv-editor__chip-row">
+                          {([
+                            ["image", locale.image],
+                            ["mask", locale.mask],
+                          ] as [UvPortPaintTarget, string][]).map(([targetId, label]) => (
+                            <button
+                              key={targetId}
+                              type="button"
+                              className={`uv-editor__tool uv-editor__tool--secondary${
+                                paintTarget === targetId ? " uv-editor__tool--active" : ""
+                              }`}
+                              {...getTooltipProps(paintTargetHints[targetId])}
+                              onClick={() => setPaintTarget(targetId)}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="uv-editor__control-group">
+                        <div className="uv-editor__control-label">{locale.tool}</div>
+                        <div className="uv-editor__chip-row">
+                          {([
+                            ["brush", locale.brushTool],
+                            ["eraser", locale.eraser],
+                            ["eyedropper", locale.eyedropper],
+                          ] as [UvPortTool, string][]).map(([tool, label]) => (
+                            <button
+                              key={tool}
+                              type="button"
+                              className={`uv-editor__tool uv-editor__tool--secondary${
+                                activeTool === tool ? " uv-editor__tool--active" : ""
+                              }`}
+                              {...getTooltipProps(toolHints[tool])}
+                              onClick={() => handleSelectTool(tool)}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="uv-editor__control-actions">
+                        <button
+                          type="button"
+                          className={`uv-editor__tool uv-editor__tool--secondary${
+                            showMaskPreview ? " uv-editor__tool--active" : ""
+                          }`}
+                          {...getTooltipProps(locale.showMaskHint)}
+                          onClick={() => setShowMaskPreview((current) => !current)}
+                        >
+                          {locale.showMask}
+                        </button>
+                        <button
+                          type="button"
+                          className="uv-editor__tool uv-editor__tool--secondary"
+                          {...getTooltipProps(locale.invertMaskHint)}
+                          onClick={handleInvertSelectedMask}
+                        >
+                          {locale.invertMask}
+                        </button>
+                        <button
+                          type="button"
+                          className="uv-editor__tool uv-editor__tool--secondary"
+                          {...getTooltipProps(locale.resetMaskHint)}
+                          onClick={handleResetSelectedMask}
+                        >
+                          {locale.resetMask}
+                        </button>
+                      </div>
+                    </>
+                  ) : null}
+                </div>
+
                 <div className="uv-editor__control-panel uv-editor__control-panel--paint">
                   <div className="uv-editor__control-group">
                     <div className="uv-editor__control-label">{locale.brushPresetType}</div>
@@ -5416,7 +6092,14 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
                   </div>
 
                 </div>
+                </div>
 
+                <div
+                  ref={effectsInspectorSectionRef}
+                  className={`uv-editor__inspector-stack${
+                    activeInspectorTab === "effects" ? " uv-editor__inspector-stack--active" : ""
+                  }`}
+                >
                 {canCreateDesignLayer ? (
                   <DesignLayerPanel
                     locale={locale}
@@ -5492,6 +6175,11 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
 
                     <div className="uv-editor__control-group">
                       <div className="uv-editor__control-label">{locale.textPrintMode}</div>
+                      <div className="uv-editor__subhint">
+                        {locale.isRussian
+                          ? "Настройки принта текста теперь живут прямо здесь: режим, фактура и тканевые артефакты."
+                          : "Text print settings now live right here: mode, texture, and fabric artifacts."}
+                      </div>
                       <select
                         className="uv-editor__text-select"
                         value={textPrintModeId || "custom"}
@@ -5838,20 +6526,57 @@ export function ExtractedUvEditorPort(props: ExtractedUvEditorPortProps) {
                     </div>
                   </div>
                 ) : null}
+                </div>
 
-                <div className="uv-editor__control-panel uv-editor__control-panel--actions">
-                  <div className="uv-editor__control-actions">
-                    <button
-                      type="button"
-                      className="uv-editor__tool uv-editor__tool--secondary"
-                      {...getTooltipProps(locale.duplicateHint)}
-                      onClick={handleDuplicateLayer}
-                      disabled={!canDuplicateSelected}
-                    >
-                      {locale.duplicate}
-                    </button>
+                {false ? (
+                  <div className="uv-editor__inspector-stack">
+                  <div className="uv-editor__control-panel uv-editor__control-panel--print">
+                    <div className="uv-editor__control-group">
+                      <div className="uv-editor__control-label">
+                        {locale.isRussian ? "Печать и материал" : "Print and material"}
+                      </div>
+                      <div className="uv-editor__selected-target">
+                        {selectedLayer?.name || locale.baseMap}
+                      </div>
+                      <div className="uv-editor__subhint">
+                        {locale.isRussian
+                          ? "В этом первом проходе tab собирает print workflow в одном месте: для text-layer здесь следующий шаг, для design-layer глубокие настройки уже доступны в панели Design."
+                          : "In this first pass, the tab anchors the print workflow in one place: text-layer controls are the next step here, while deep design-layer print settings already live inside the Design panel."}
+                      </div>
+                    </div>
+
+                    <div className="uv-editor__control-group">
+                      <div className="uv-editor__control-label">
+                        {locale.isRussian ? "Текущий статус" : "Current status"}
+                      </div>
+                      <div className="uv-editor__status-card">
+                        <strong>
+                          {selectedTextLayer?.textStyle
+                            ? locale.isRussian
+                              ? "Текстовый print-режим готов к переносу в этот tab"
+                              : "Text print settings are ready to move into this tab"
+                            : selectedDesignLayer?.designStyle
+                              ? locale.isRussian
+                                ? "Design-layer уже имеет print presets и texture controls"
+                                : "Design layers already have print presets and texture controls"
+                              : locale.isRussian
+                                ? "Выберите text-layer или design-layer для детальных print controls"
+                                : "Select a text or design layer for detailed print controls"}
+                        </strong>
+                        <span className="uv-editor__subhint">
+                          {showMaskPreview
+                            ? locale.isRussian
+                              ? "Mask preview включён и поможет точнее готовить видимость принта."
+                              : "Mask preview is enabled to help prepare print visibility more precisely."
+                            : locale.isRussian
+                              ? "Следующий шаг сюда: print mode, grain, distress, fade и fabric noise для текста."
+                              : "Next step here: text print mode, grain, distress, fade, and fabric noise."}
+                        </span>
+                      </div>
+                    </div>
                   </div>
                 </div>
+                ) : null}
               </div>
             </section>
           </div>

@@ -80,3 +80,91 @@
 - фактура печати для design-layer
 - фактура печати для текста
 - готовые одежные принт-режимы
+
+## Макет Photoshop-like UV-окна
+
+Эти фичи не выносим в отдельный экран. Все живет внутри текущего плавающего UV-окна.
+
+Базовая схема окна:
+
+```text
++--------------------------------------------------------------+
+| Header: layers / mode / file / undo / redo / close           |
++----------------------+---------------------------------------+
+| Layers               | UV canvas / preview                   |
+|                      |                                       |
+| [layer item]         | transform handles                     |
+| [mask item]          | guides / seams / safe area            |
+| [fx item]            | warp mesh / crop / brush overlay      |
+| [adjustment item]    |                                       |
++----------------------+---------------------------------------+
+| Inspector tabs: Layer | Mask | Effects | Print               |
++--------------------------------------------------------------+
+| Controls for the active tab                                  |
++--------------------------------------------------------------+
+```
+
+Что именно добавляем в текущее окно:
+
+- слева остается список слоев, но у каждого слоя появляются `mask`, `fx`, `duplicate`, `hide`
+- по центру остается UV-canvas, но он умеет показывать `warp grid`, `seams`, `safe area`, `mirror`, `guides`
+- снизу живет один inspector с вкладками `Слой`, `Маска`, `Эффекты`, `Печать`
+- новые инструменты не выносим в новую панель, а добавляем в текущий ряд с `Трансформ`, `Обрезка`, `Кисть`, `Ластик`
+
+### Вкладка `Слой`
+
+- opacity
+- blend mode
+- position
+- scale X / scale Y
+- rotation
+- warp
+- snap to center / seams
+
+### Вкладка `Маска`
+
+- добавить маску
+- переключение `рисовать маску / рисовать слой`
+- brush size
+- softness
+- invert mask
+- show mask overlay
+- unlink mask from layer transform
+
+### Вкладка `Эффекты`
+
+- stroke
+- outer glow
+- inner shadow
+- drop shadow
+- bevel / emboss lite
+- pattern overlay
+- gradient overlay
+
+### Вкладка `Печать`
+
+- type: `Обычная`, `Шелкография`, `Резина`, `Вышивка`, `Puff`
+- fabric response
+- ink density
+- height / depth
+- roughness
+- edge wear
+- seam fade
+
+## Этапы внедрения без перегруза
+
+1. Общий inspector с вкладками внутри текущего UV-окна.
+2. Layer mask с mask brush и mask overlay.
+3. Effects tab со stroke, glow и shadow.
+4. Warp / mesh warp для принтов и design-layer.
+5. Print modes с реакцией на материал.
+
+## Что брать прямо сейчас
+
+Если делать максимум пользы при минимуме хаоса, то порядок такой:
+
+1. `Layer mask`
+2. `Effects tab`
+3. `Warp`
+
+Это даст ощущение настоящего mini-Photoshop внутри уже существующего UV-редактора без перелома всего UX.

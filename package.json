@@ -16,7 +16,9 @@
     "prebuild": "yarn assets:build",
     "dev": "node scripts/dev.mjs",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "deploy:reg-ru": "python scripts/deploy-reg-ru.py",
+    "deploy:reg-ru:prune": "python scripts/deploy-reg-ru.py --prune"
   },
   "dependencies": {
     "@react-three/drei": "9.122.0",

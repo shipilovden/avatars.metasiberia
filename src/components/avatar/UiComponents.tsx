@@ -21,40 +21,25 @@ export function SettingsGearIcon() {
   );
 }
 
-export function PaintPaletteIcon() {
+export function AvatarSettingsIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
-      <defs>
-        <linearGradient id="paletteShell" x1="5" y1="4" x2="18" y2="20" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stopColor="#ffd98a" />
-          <stop offset="1" stopColor="#f2b65b" />
-        </linearGradient>
-        <linearGradient id="paletteThumb" x1="10" y1="13" x2="18" y2="22" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stopColor="#f0a94b" />
-          <stop offset="1" stopColor="#d9822b" />
-        </linearGradient>
-      </defs>
       <path
-        d="M12 2.25C6.62 2.25 2.25 6.31 2.25 11.34c0 2.15.84 4.1 2.24 5.58 1.4 1.48 3.38 2.48 5.68 2.73.63.07 1.02.66.83 1.25l-.22.71a1.63 1.63 0 0 0 1.56 2.14h.98c4.62 0 8.43-3.39 8.43-7.55 0-1.77-.71-3.18-2.09-4.14-.72-.5-1.55-.77-2.49-.77h-1.72c-.98 0-1.78-.73-1.78-1.62 0-.24.06-.47.17-.69l.55-1.06c.33-.64.5-1.33.5-2.04 0-2-1.53-3.63-3.42-3.63Z"
-        fill="url(#paletteShell)"
+        d="M12 3.7a3.75 3.75 0 1 0 0 7.5 3.75 3.75 0 0 0 0-7.5Zm0 9.45c-4.48 0-8.1 2.47-8.1 5.53 0 .9.73 1.62 1.62 1.62h12.96c.9 0 1.62-.72 1.62-1.62 0-3.06-3.62-5.53-8.1-5.53Z"
+        fill="currentColor"
       />
       <path
-        d="M17.4 13.2c1.03 0 1.86.8 1.86 1.8 0 .99-.83 1.8-1.86 1.8h-1.86c-.87 0-1.58.69-1.58 1.53 0 .25.07.5.18.71l.42.74c.21.37.31.79.31 1.2 0 .84-.41 1.59-1.03 2.06.14.02.29.03.44.03h.98c4.62 0 8.43-3.39 8.43-7.55 0-1.77-.71-3.18-2.09-4.14-.72-.5-1.55-.77-2.49-.77h-.82c-.18.55-.67.99-1.29 1.2Z"
-        fill="url(#paletteThumb)"
-        opacity="0.95"
+        d="M12 5.4a2.05 2.05 0 1 1 0 4.1 2.05 2.05 0 0 1 0-4.1Z"
+        fill="#ffffff"
+        opacity="0.34"
       />
-      <circle cx="7.1" cy="10.15" r="1.38" fill="#ff6b6b" />
-      <circle cx="10.25" cy="7.55" r="1.38" fill="#4dabf7" />
-      <circle cx="14.35" cy="7.7" r="1.38" fill="#ffd43b" />
-      <circle cx="16.95" cy="11" r="1.38" fill="#51cf66" />
-      <circle cx="17.85" cy="6.1" r="0.9" fill="#845ef7" />
       <path
-        d="M8.15 4.85c1.16-.88 2.58-1.4 4.1-1.4"
+        d="M7.2 18.4c.62-1.92 2.56-3.25 4.8-3.25s4.18 1.33 4.8 3.25"
         fill="none"
-        stroke="#fff5d9"
+        stroke="#ffffff"
         strokeLinecap="round"
         strokeWidth="1.2"
-        opacity="0.9"
+        opacity="0.5"
       />
     </svg>
   );

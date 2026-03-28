@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+
+Host: avatars.metasiberia.com
+Sitemap: https://avatars.metasiberia.com/sitemap.xml
