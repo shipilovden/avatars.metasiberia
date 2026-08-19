@@ -162,6 +162,32 @@ def iter_local_files(local_root: Path) -> list[Path]:
     return sorted(path for path in local_root.rglob("*") if path.is_file())
 
 
+SKIP_FILENAMES = {"fonts.rar"}
+
+
+def compute_local_hash(path: Path) -> str:
+    import hashlib
+
+    h = hashlib.sha1()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def compute_remote_hash(ssh: paramiko.SSHClient, remote_path: str) -> str | None:
+    # Try sha1sum then md5sum; return hex digest or None
+    for cmd in (f"sha1sum {shlex.quote(remote_path)}", f"md5sum {shlex.quote(remote_path)}"):
+        stdin, stdout, stderr = ssh.exec_command(cmd, timeout=REMOTE_COMMAND_TIMEOUT)
+        out = stdout.read().decode("utf-8", "ignore").strip()
+        err = stderr.read().decode("utf-8", "ignore").strip()
+        if out:
+            return out.split()[0]
+        if err and "not found" in err:
+            continue
+    return None
+
+
 def resolve_upload_source(rel_path: str, dist_path: Path, public_root: Path) -> Path:
     if rel_path != "index.html":
         public_path = public_root.joinpath(*rel_path.split("/"))
@@ -323,17 +349,41 @@ def main() -> int:
             local_rel_paths.add(rel_path)
             remote_path = posixpath.join(config.remote_root, rel_path)
             remote_info = remote_file_stats.get(rel_path)
+                # Skip problematic archive files that are not required by the app
+                if any(rel_path.endswith(name) for name in SKIP_FILENAMES):
+                    print(f"[skip]   excluded by policy: {rel_path}")
+                    skipped += 1
+                    continue
 
-            if upload_needed(local_path, remote_info):
-                action = "[upload]" if not args.dry_run else "[plan]"
-                print(f"{action} {rel_path}")
-                if not args.dry_run:
-                    upload_file(sftp, local_path, remote_path, known_dirs)
-                uploaded += 1
-            else:
-                skipped += 1
-                if args.verbose:
-                    print(f"[skip]   {rel_path}")
+                # Decide whether upload is needed (size/mtime).
+                if upload_needed(local_path, remote_info):
+                    # If sizes are equal but mtimes differ, compare hashes to avoid reuploading identical content
+                    if (
+                        remote_info is not None
+                        and local_path.stat().st_size == remote_info.size
+                        and abs(int(local_path.stat().st_mtime) - remote_info.mtime) > 1
+                    ):
+                        try:
+                            remote_hash = compute_remote_hash(ssh, posixpath.join(config.remote_root, rel_path))
+                            local_hash = compute_local_hash(local_path)
+                            if remote_hash and local_hash and remote_hash == local_hash:
+                                skipped += 1
+                                if args.verbose:
+                                    print(f"[skip]   identical content: {rel_path}")
+                                continue
+                        except Exception:
+                            # If hash check fails, fall back to uploading as before
+                            pass
+
+                    action = "[upload]" if not args.dry_run else "[plan]"
+                    print(f"{action} {rel_path}")
+                    if not args.dry_run:
+                        upload_file(sftp, local_path, remote_path, known_dirs)
+                    uploaded += 1
+                else:
+                    skipped += 1
+                    if args.verbose:
+                        print(f"[skip]   {rel_path}")
 
         if args.prune:
             remote_files, remote_dirs = collect_remote_tree(ssh, config.remote_root)
