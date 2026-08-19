@@ -61,14 +61,4 @@ The editor includes an integrated texture and UV workflow:
 
 The editor contains a visual library of avatar elements and clothing categories, allowing fast appearance customization directly in the browser.
 
-## Images for README
-Place screenshots or example images in `docs/images` and reference them with relative paths in this README.
-
-Notes:
-- Keep images reasonably small (web-friendly formats: PNG, JPG, or WebP).
-- For large binaries use `git lfs` or optimize before committing.
-- You can create subfolders inside `docs/images` for organization.
-
 ---
-
-If you want, I can add placeholder images or optimize existing screenshots.
