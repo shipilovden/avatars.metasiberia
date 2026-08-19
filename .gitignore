@@ -18,3 +18,12 @@ upload-parts-tgz/
 !.vscode/extensions.json
 .idea
 .DS_Store
+# Local build/output and temporary files
+output/
+tmp/
+# Archive uploads and packaged builds
+*.tgz
+*.zip
+
+# OS files
+Thumbs.db
