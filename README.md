@@ -6,6 +6,22 @@
 
 Short guide and examples for repository documentation.
 
+## About
+
+**Metasiberia Avatars Creator** is a browser-based editor for creating and customizing 3D avatars for the **Metasiberia** virtual environment.
+
+The editor combines character appearance configuration, clothing selection and a built-in texture/UV editing environment in a single web interface.
+
+Users can customize an avatar visually and work directly with the textures applied to its 3D model.
+
+### Live editor
+
+[**https://avatars.metasiberia.com/**](https://avatars.metasiberia.com/)
+
+<p align="center">
+	<img src="docs/images/editor-overview.png" alt="Metasiberia Avatars Creator interface" width="100%">
+</p>
+
 ## Images for README
 Place screenshots or example images in `docs/images` and reference them with relative paths in this README.
 
