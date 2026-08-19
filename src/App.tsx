@@ -2352,12 +2352,54 @@ function App() {
     const fileName = `metasibir-avatar-${selectedGender}-${selectedPresetId}.glb`;
     setExportFileName(fileName);
     const templateId = selectedPreset?.templateId;
-    if (!templateId) {
+    const baseModelUrl = selectedPreset?.baseModelUrl || null;
+    if (!templateId && !baseModelUrl) {
       return;
     }
 
     void (async () => {
       try {
+        // Prefer local base model export when a local base is available.
+        if (baseModelUrl) {
+          try {
+            const response = await fetch(baseModelUrl);
+            if (!response.ok) {
+              throw new Error(`Failed to load local base GLB: ${response.status}`);
+            }
+            const sourceBlob = await response.blob();
+            const processedBlob = await postProcessExportedAvatarBlob({
+              sourceBlob,
+              replaceTextureUrl: shouldReplaceTexture ? replaceTextureUrlState : null,
+              replaceTextureMeshes: shouldReplaceTexture ? replacementSlots : [],
+              replaceTextureScale: replaceScale,
+              replaceTextureScaleX: replaceScaleX,
+              replaceTextureScaleY: replaceScaleY,
+              replaceTextureRotationDeg: replaceRotationDeg,
+              appliedUvDecals,
+              appliedUvTextures,
+              baseTextureOverrideUrls: paintedBasePreviewBySlot,
+              baseModelUrl: selectedPreset?.baseModelUrl || null,
+              slotModelUrls: composedScene.slotModelUrls,
+            });
+
+            const url = URL.createObjectURL(processedBlob);
+            setExportDownloadUrl((current) => {
+              if (current) {
+                URL.revokeObjectURL(current);
+              }
+              return url;
+            });
+            return;
+          } catch (err) {
+            // If local export fails, fall back to RPM export pipeline.
+            console.warn("Local base export failed, falling back to RPM pipeline", err);
+          }
+        }
+
+        if (!templateId) {
+          throw new Error("No templateId available for RPM export.");
+        }
+
         const { token, userId } = await createAnonymousUser(RPM_APP_NAME);
         const avatar = await createAvatarFromTemplate({
           token,
@@ -2404,7 +2446,7 @@ function App() {
           return url;
         });
       } catch (error) {
-        console.error("Failed to export RPM avatar", error);
+        console.error("Failed to export avatar", error);
       }
     })();
   };
