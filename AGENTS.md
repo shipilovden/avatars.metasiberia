@@ -67,12 +67,30 @@
   Do this before changing transform math.
 
 ## Verification Status
-- Checked on `2026-03-11`.
+- Checked on `2026-03-25`.
 - `src/data/generated/local-library-manifest.json` resolves to real files for both libraries:
   - male: `516` assets, `0` missing GLB, `0` missing icon, `4` presets, `0` missing base, `0` missing preview
   - female: `521` assets, `0` missing GLB, `0` missing icon, `4` presets, `0` missing base, `0` missing preview
 - Production build passes with `yarn build`.
 - Current remaining warning is Vite's large bundle warning only.
+
+## REG.RU Deployment
+- Production hostname: `avatars.metasiberia.com`
+- Canonical URL: `https://avatars.metasiberia.com`
+- Mirror hostname: `https://www.avatars.metasiberia.com`
+- Legacy hostname: `https://mac.metasiberia.com` and `https://www.mac.metasiberia.com` should redirect to the canonical URL once the new trusted certificate is active
+- Hosting provider: REG.RU shared hosting via ISPmanager
+- Remote web root: `/var/www/u2978374/data/www/avatars.metasiberia.com`
+- DNS target: `37.140.192.242`
+- Target public certificate: `avatars.metasiberia.com_le3` (Let's Encrypt request created on `2026-03-26`, trusted issuance still needs verification before forcing legacy redirects)
+- Keep the canonical redirect + SPA fallback rules in [public/.htaccess](./public/.htaccess) when changing hosting behavior
+- Routine deploys should use the incremental script instead of rebuilding/uploading a multi-gigabyte archive:
+  - `yarn deploy:reg-ru`
+  - `yarn deploy:reg-ru -- --skip-build`
+  - `yarn deploy:reg-ru:prune`
+- Machine-readable local deploy config lives in `.secrets/reg-ru-deploy.secret.json` and is intentionally gitignored
+- Human-readable local access notes live in `.secrets/reg-ru-access.local.md` and are intentionally gitignored
+- Tracked deployment instructions live in [docs/REG_RU_DEPLOY.md](./docs/REG_RU_DEPLOY.md)
 
 ## Important Constraint
 - Do not revert back to the old single-base setup.

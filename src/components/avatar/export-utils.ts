@@ -3,6 +3,7 @@ import {
   RPM_API_BASE,
   SLOT_NAMES,
   TYPE_TO_AVATAR_ASSET_KEY,
+  getCanonicalMeshSlot,
   getAppliedUvDecalsForMesh,
 } from "./shared";
 import {
@@ -266,26 +267,32 @@ const collectPrimitiveTargetsForMeshes = (json: GlbJson, meshNames: readonly str
 const drawReplacementPattern = async ({
   canvas,
   textureUrl,
+  uv,
   scale,
   scaleX,
   scaleY,
   rotationDeg,
+  opacity = 1,
 }: {
   canvas: HTMLCanvasElement;
   textureUrl: string;
+  uv?: [number, number];
   scale: number;
   scaleX: number;
   scaleY: number;
   rotationDeg: number;
+  opacity?: number;
 }) => {
   const image = await readFileAsImage(await fetch(textureUrl).then((response) => response.blob()));
   drawReplacementPatternFromImage({
     canvas,
     image,
+    uvCenter: uv,
     scale,
     scaleX,
     scaleY,
     rotationDeg,
+    opacity,
   });
 };
 
@@ -454,7 +461,9 @@ const rebuildGlbWithModifiedImages = async ({
   replaceTextureScaleX,
   replaceTextureScaleY,
   replaceTextureRotationDeg,
+  appliedUvTextures,
   appliedUvDecals,
+  baseTextureOverrideUrls,
   baseModelUrl,
   slotModelUrls,
 }: {
@@ -466,7 +475,9 @@ const rebuildGlbWithModifiedImages = async ({
   replaceTextureScaleX: number;
   replaceTextureScaleY: number;
   replaceTextureRotationDeg: number;
+  appliedUvTextures: readonly AppliedUvDecal[];
   appliedUvDecals: readonly AppliedUvDecal[];
+  baseTextureOverrideUrls: Partial<Record<MeshSlot, string>>;
   baseModelUrl: string | null;
   slotModelUrls: Partial<Record<MeshSlot, string>>;
 }) => {
@@ -517,6 +528,7 @@ const rebuildGlbWithModifiedImages = async ({
   }));
   const clonedMaterialIndexByTarget = new Map<string, number>();
   const sourceTargetByMaterialIndex = new Map<number, PrimitiveTarget>();
+  const appliedUvTexturesByMaterialIndex = new Map<number, AppliedUvDecal[]>();
   const appliedUvDecalsByMaterialIndex = new Map<number, AppliedUvDecal[]>();
   const shouldReplaceByMaterialIndex = new Map<number, boolean>();
   const replaceMeshSet = new Set(replaceTextureMeshes);
@@ -560,6 +572,10 @@ const rebuildGlbWithModifiedImages = async ({
       clonedMaterialIndexByTarget.set(targetKey, materialIndex);
       sourceTargetByMaterialIndex.set(materialIndex, target);
 
+      appliedUvTexturesByMaterialIndex.set(
+        materialIndex,
+        getAppliedUvDecalsForMesh(appliedUvTextures, target.meshName)
+      );
       appliedUvDecalsByMaterialIndex.set(
         materialIndex,
         getAppliedUvDecalsForMesh(appliedUvDecals, target.meshName)
@@ -587,6 +603,15 @@ const rebuildGlbWithModifiedImages = async ({
     const { imageDef, bytes } = extractImageBytes({ json, binChunk, imageIndex });
     const originalBlob = new Blob([bytes], { type: getMimeFromImageDef(imageDef) });
     const originalImage = await readFileAsImage(originalBlob);
+    const canonicalMeshSlot =
+      getCanonicalMeshSlot(sourceTarget.meshName) || (sourceTarget.meshName as MeshSlot);
+    const baseTextureOverrideUrl = baseTextureOverrideUrls[canonicalMeshSlot] || null;
+    const overrideImage =
+      baseTextureOverrideUrl
+        ? await readFileAsImage(
+            await fetch(baseTextureOverrideUrl).then((response) => response.blob())
+          )
+        : null;
     const sourceModelUrl =
       slotModelUrls[sourceTarget.meshName as MeshSlot] || baseModelUrl;
     const localBaseImage =
@@ -595,9 +620,9 @@ const rebuildGlbWithModifiedImages = async ({
             modelUrl: sourceModelUrl,
             meshName: sourceTarget.meshName,
             primitiveIndex: sourceTarget.primitiveIndex,
-          })
+        })
         : null;
-    const baseImage = localBaseImage || originalImage;
+    const baseImage = overrideImage || localBaseImage || originalImage;
     const canvas = document.createElement("canvas");
     canvas.width = Math.max(1, baseImage.naturalWidth || baseImage.width);
     canvas.height = Math.max(1, baseImage.naturalHeight || baseImage.height);
@@ -621,6 +646,19 @@ const rebuildGlbWithModifiedImages = async ({
       }
     }
 
+    for (const appliedUvTexture of appliedUvTexturesByMaterialIndex.get(materialIndex) || []) {
+      await drawReplacementPattern({
+        canvas,
+        textureUrl: appliedUvTexture.textureUrl,
+        uv: appliedUvTexture.uv,
+        scale: appliedUvTexture.scale,
+        scaleX: appliedUvTexture.scaleX,
+        scaleY: appliedUvTexture.scaleY,
+        rotationDeg: appliedUvTexture.rotationDeg,
+        opacity: appliedUvTexture.opacity,
+      });
+    }
+
     for (const appliedUvDecal of appliedUvDecalsByMaterialIndex.get(materialIndex) || []) {
       const decalImage = await readFileAsImage(
         await fetch(appliedUvDecal.textureUrl).then((response) => response.blob())
@@ -633,6 +671,8 @@ const rebuildGlbWithModifiedImages = async ({
         scaleX: appliedUvDecal.scaleX,
         scaleY: appliedUvDecal.scaleY,
         rotationDeg: appliedUvDecal.rotationDeg,
+        blendMode: appliedUvDecal.blendMode,
+        opacity: appliedUvDecal.opacity,
       });
     }
 
@@ -735,7 +775,9 @@ export const postProcessExportedAvatarBlob = async ({
   replaceTextureScaleX,
   replaceTextureScaleY,
   replaceTextureRotationDeg,
+  appliedUvTextures,
   appliedUvDecals,
+  baseTextureOverrideUrls,
   baseModelUrl,
   slotModelUrls,
 }: {
@@ -746,12 +788,16 @@ export const postProcessExportedAvatarBlob = async ({
   replaceTextureScaleX: number;
   replaceTextureScaleY: number;
   replaceTextureRotationDeg: number;
+  appliedUvTextures: readonly AppliedUvDecal[];
   appliedUvDecals: readonly AppliedUvDecal[];
+  baseTextureOverrideUrls: Partial<Record<MeshSlot, string>>;
   baseModelUrl: string | null;
   slotModelUrls: Partial<Record<MeshSlot, string>>;
 }) => {
   const needsTexture = Boolean(replaceTextureUrl && replaceTextureMeshes.length > 0);
+  const needsUvTextures = appliedUvTextures.length > 0;
   const needsDecal = appliedUvDecals.length > 0;
+  const needsBaseOverrides = Object.keys(baseTextureOverrideUrls).length > 0;
   const localTextureSyncMeshNames = Array.from(
     new Set<MeshSlot>([
       ...Object.values(SLOT_NAMES),
@@ -759,7 +805,7 @@ export const postProcessExportedAvatarBlob = async ({
     ])
   );
   const needsLocalTextureSync = Boolean(baseModelUrl || Object.keys(slotModelUrls).length > 0);
-  if (!needsTexture && !needsDecal && !needsLocalTextureSync) {
+  if (!needsTexture && !needsUvTextures && !needsDecal && !needsLocalTextureSync && !needsBaseOverrides) {
     return sourceBlob;
   }
 
@@ -768,6 +814,10 @@ export const postProcessExportedAvatarBlob = async ({
   const replacementPrimitiveTargets = needsTexture
     ? collectPrimitiveTargetsForMeshes(json, replaceTextureMeshes)
     : [];
+  const uvTextureMeshNames = Array.from(new Set(appliedUvTextures.map((entry) => entry.meshName)));
+  const uvTexturePrimitiveTargets = needsUvTextures
+    ? collectPrimitiveTargetsForMeshes(json, uvTextureMeshNames)
+    : [];
   const decalMeshNames = Array.from(new Set(appliedUvDecals.map((entry) => entry.meshName)));
   const decalPrimitiveTargets = needsDecal
     ? collectPrimitiveTargetsForMeshes(json, decalMeshNames)
@@ -775,9 +825,18 @@ export const postProcessExportedAvatarBlob = async ({
   const localTexturePrimitiveTargets = needsLocalTextureSync
     ? collectPrimitiveTargetsForMeshes(json, localTextureSyncMeshNames)
     : [];
+  const baseOverridePrimitiveTargets = needsBaseOverrides
+    ? collectPrimitiveTargetsForMeshes(json, Object.keys(baseTextureOverrideUrls) as MeshSlot[])
+    : [];
   const targetPrimitiveTargets = Array.from(
     new Map(
-      [...replacementPrimitiveTargets, ...decalPrimitiveTargets, ...localTexturePrimitiveTargets].map((target) => [
+      [
+        ...replacementPrimitiveTargets,
+        ...uvTexturePrimitiveTargets,
+        ...decalPrimitiveTargets,
+        ...localTexturePrimitiveTargets,
+        ...baseOverridePrimitiveTargets,
+      ].map((target) => [
         `${target.meshIndex}:${target.primitiveIndex}:${target.materialIndex}`,
         target,
       ])
@@ -793,7 +852,9 @@ export const postProcessExportedAvatarBlob = async ({
     replaceTextureScaleX,
     replaceTextureScaleY,
     replaceTextureRotationDeg,
+    appliedUvTextures: needsUvTextures ? appliedUvTextures : [],
     appliedUvDecals: needsDecal ? appliedUvDecals : [],
+    baseTextureOverrideUrls,
     baseModelUrl,
     slotModelUrls,
   });

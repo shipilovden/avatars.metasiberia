@@ -2,6 +2,9 @@ import assetSchema from "../../config/asset-schema.json";
 import assetDataset from "../../data/assets-catalog.json";
 import localAssetCapabilitiesManifest from "../../data/generated/local-asset-capabilities.json";
 import localLibraryManifest from "../../data/generated/local-library-manifest.json";
+import type { DesignLayerStyle } from "../uv-editor-port/design-presets";
+import type { PrintModeId } from "../uv-editor-port/print-mode-presets";
+import type { PrintTextureStyle } from "../uv-editor-port/print-texture";
 
 export type SupportedType =
   | "top"
@@ -103,10 +106,51 @@ export type StickerTransform = {
   rotationDeg: number;
 };
 
+export type TextDecalStyle = {
+  text: string;
+  fontFamily: string;
+  fontSize: number;
+  color: string;
+  strokeColor: string;
+  strokeWidth: number;
+  shadowColor: string;
+  shadowOpacity: number;
+  shadowBlur: number;
+  shadowOffsetX: number;
+  shadowOffsetY: number;
+  printTexture: PrintTextureStyle;
+  printModeId: PrintModeId | null;
+};
+
+export const getDefaultTextStrokeStyle = () => ({
+  strokeColor: "#ffffff",
+  strokeWidth: 0,
+});
+
+export const getDefaultTextShadowStyle = (fontSize: number) => {
+  const safeFontSize = Math.max(18, Math.min(220, Math.round(fontSize)));
+  return {
+    shadowColor: "#000000",
+    shadowOpacity: 0.18,
+    shadowBlur: Math.max(2, Number.parseFloat((safeFontSize * 0.08).toFixed(1))),
+    shadowOffsetX: 0,
+    shadowOffsetY: Math.max(1, Number.parseFloat((safeFontSize * 0.03).toFixed(1))),
+  };
+};
+
+export type DecalProjectionBasis = {
+  position: [number, number, number];
+  axisU: [number, number, number];
+  axisV: [number, number, number];
+  normal?: [number, number, number];
+};
+
 export type DecalAsset = {
   id: string;
   fileName: string;
   textureUrl: string;
+  textStyle?: TextDecalStyle | null;
+  designStyle?: DesignLayerStyle | null;
 };
 
 export const SLOT_NAMES = {
@@ -127,9 +171,114 @@ export const SLOT_NAMES = {
 } as const;
 
 export type MeshSlot = (typeof SLOT_NAMES)[keyof typeof SLOT_NAMES];
+const CANONICAL_MESH_SLOTS = new Set<MeshSlot>(Object.values(SLOT_NAMES) as MeshSlot[]);
+const MESH_SLOT_EXACT_ALIASES: Partial<Record<string, MeshSlot>> = {
+  "Mesh.009": SLOT_NAMES.top,
+  "Mesh.003": SLOT_NAMES.headwear,
+  Wolf3D_Skin: SLOT_NAMES.head,
+  "hair-60": SLOT_NAMES.hair,
+  low: SLOT_NAMES.hair,
+};
+
+export const normalizeMeshName = (value: string) =>
+  value.trim().replace(/\.+$/, "").replace(/\.\d+$/, "");
+
+export const getCanonicalMeshSlot = (meshName: string | null | undefined): MeshSlot | null => {
+  if (!meshName) {
+    return null;
+  }
+
+  const exactAlias = MESH_SLOT_EXACT_ALIASES[meshName];
+  if (exactAlias) {
+    return exactAlias;
+  }
+
+  if (CANONICAL_MESH_SLOTS.has(meshName as MeshSlot)) {
+    return meshName as MeshSlot;
+  }
+
+  const normalizedMeshName = normalizeMeshName(meshName);
+  if (CANONICAL_MESH_SLOTS.has(normalizedMeshName as MeshSlot)) {
+    return normalizedMeshName as MeshSlot;
+  }
+
+  const normalizedLower = normalizedMeshName.toLowerCase();
+  if (normalizedLower.startsWith("hair-") || normalizedLower.includes("wolf3d_hair")) {
+    return SLOT_NAMES.hair;
+  }
+  if (normalizedLower.startsWith("beard-") || normalizedLower.includes("wolf3d_beard")) {
+    return SLOT_NAMES.beard;
+  }
+  if (normalizedLower.includes("wolf3d_headwear")) {
+    return SLOT_NAMES.headwear;
+  }
+  if (normalizedLower.includes("wolf3d_facewear")) {
+    return SLOT_NAMES.facewear;
+  }
+  if (normalizedLower.includes("wolf3d_facemask")) {
+    return SLOT_NAMES.faceMask;
+  }
+  if (normalizedLower.includes("wolf3d_outfit_top")) {
+    return SLOT_NAMES.top;
+  }
+  if (normalizedLower.includes("wolf3d_outfit_bottom")) {
+    return SLOT_NAMES.bottom;
+  }
+  if (normalizedLower.includes("wolf3d_outfit_footwear")) {
+    return SLOT_NAMES.footwear;
+  }
+  if (normalizedLower.includes("wolf3d_body")) {
+    return SLOT_NAMES.body;
+  }
+  if (normalizedLower.includes("wolf3d_head") || normalizedLower === "wolf3d_skin") {
+    return SLOT_NAMES.head;
+  }
+  if (normalizedLower === "eyeleft" || normalizedLower === "wolf3d_eyeleft") {
+    return SLOT_NAMES.eyeLeft;
+  }
+  if (normalizedLower === "eyeright" || normalizedLower === "wolf3d_eyeright") {
+    return SLOT_NAMES.eyeRight;
+  }
+  if (normalizedLower.includes("wolf3d_teeth")) {
+    return SLOT_NAMES.teeth;
+  }
+  if (normalizedLower.includes("wolf3d_glasses")) {
+    return SLOT_NAMES.glasses;
+  }
+
+  return null;
+};
+
 export type MeshTintMode = "flat" | "eyebrows" | "lips";
 export type MeshTintEntry = { color: string; mode: MeshTintMode };
 export type MeshTintMap = Partial<Record<string, MeshTintEntry>>;
+
+export const UV_LAYER_BLEND_MODES = [
+  "normal",
+  "multiply",
+  "screen",
+  "overlay",
+  "soft-light",
+  "hard-light",
+  "darken",
+  "lighten",
+  "color-dodge",
+  "color-burn",
+  "difference",
+  "exclusion",
+] as const;
+
+export type UvLayerBlendMode = (typeof UV_LAYER_BLEND_MODES)[number];
+
+export const DEFAULT_UV_LAYER_BLEND_MODE: UvLayerBlendMode = "normal";
+
+export const isUvLayerBlendMode = (value: unknown): value is UvLayerBlendMode =>
+  typeof value === "string" &&
+  (UV_LAYER_BLEND_MODES as readonly string[]).includes(value);
+
+export const getCanvasCompositeOperationForUvBlendMode = (
+  blendMode: UvLayerBlendMode
+): GlobalCompositeOperation => (blendMode === "normal" ? "source-over" : blendMode);
 
 export type AppliedUvDecal = {
   id: string;
@@ -142,6 +291,11 @@ export type AppliedUvDecal = {
   scaleY: number;
   rotationDeg: number;
   textureUrl: string;
+  blendMode: UvLayerBlendMode;
+  opacity: number;
+  textStyle?: TextDecalStyle | null;
+  designStyle?: DesignLayerStyle | null;
+  projection?: DecalProjectionBasis | null;
 };
 
 export type UiCopy = {
@@ -445,7 +599,10 @@ export const FACIAL_FEATURE_TYPES: SupportedType[] = [
 export const getAppliedUvDecalsForMesh = (
   appliedUvDecals: readonly AppliedUvDecal[],
   meshName: string
-) => appliedUvDecals.filter((entry) => entry.meshName === meshName);
+) => {
+  const targetSlot = getCanonicalMeshSlot(meshName) || meshName;
+  return appliedUvDecals.filter((entry) => (getCanonicalMeshSlot(entry.meshName) || entry.meshName) === targetSlot);
+};
 
 export const makeClientId = () =>
   typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"

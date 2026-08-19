@@ -21,6 +21,49 @@ export function SettingsGearIcon() {
   );
 }
 
+export function AvatarSettingsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M12 3.7a3.75 3.75 0 1 0 0 7.5 3.75 3.75 0 0 0 0-7.5Zm0 9.45c-4.48 0-8.1 2.47-8.1 5.53 0 .9.73 1.62 1.62 1.62h12.96c.9 0 1.62-.72 1.62-1.62 0-3.06-3.62-5.53-8.1-5.53Z"
+        fill="currentColor"
+      />
+      <path
+        d="M12 5.4a2.05 2.05 0 1 1 0 4.1 2.05 2.05 0 0 1 0-4.1Z"
+        fill="#ffffff"
+        opacity="0.34"
+      />
+      <path
+        d="M7.2 18.4c.62-1.92 2.56-3.25 4.8-3.25s4.18 1.33 4.8 3.25"
+        fill="none"
+        stroke="#ffffff"
+        strokeLinecap="round"
+        strokeWidth="1.2"
+        opacity="0.5"
+      />
+    </svg>
+  );
+}
+
+export function EyedropperIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M14.9 3.6a2.9 2.9 0 0 1 4.1 4.1l-1.2 1.2 1 1a1 1 0 0 1 0 1.4l-2.1 2.1a1 1 0 0 1-1.4 0l-.4-.4-6.8 6.8a2.6 2.6 0 0 1-1.44.73l-2.22.3a.9.9 0 0 1-1.01-1.01l.3-2.22a2.6 2.6 0 0 1 .73-1.44l6.8-6.8-.4-.4a1 1 0 0 1 0-1.4l2.1-2.1a1 1 0 0 1 1.4 0l1 1 1.2-1.2Z"
+        fill="currentColor"
+      />
+      <path
+        d="M6.4 17.8 13 11.2"
+        fill="none"
+        stroke="#ffffff"
+        strokeLinecap="round"
+        strokeWidth="1.4"
+      />
+      <circle cx="5.35" cy="18.65" r="1.55" fill="#7fe7ff" />
+    </svg>
+  );
+}
+
 export function PresetPreviewImage({ src, alt }: { src: string; alt: string }) {
   const [normalizedSrc, setNormalizedSrc] = useState(src);
 

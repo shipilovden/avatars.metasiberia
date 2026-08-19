@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BufferGeometry, Mesh, Texture } from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import type {
+  DecalProjectionBasis,
+  TextDecalStyle,
+  UvLayerBlendMode,
+} from "./avatar/shared";
+import type { DesignLayerStyle } from "./uv-editor-port/design-presets";
 
 type Copy = {
   uvEditorTitle: string;
@@ -20,6 +26,8 @@ type SlotOption = {
 
 type AppliedUvDecal = {
   id: string;
+  assetId: string;
+  fileName: string;
   meshName: string;
   uv: [number, number];
   scale: number;
@@ -27,6 +35,11 @@ type AppliedUvDecal = {
   scaleY: number;
   rotationDeg: number;
   textureUrl: string;
+  blendMode: UvLayerBlendMode;
+  opacity: number;
+  textStyle?: TextDecalStyle | null;
+  designStyle?: DesignLayerStyle | null;
+  projection?: DecalProjectionBasis | null;
 };
 
 type LoadedUvMesh = {
@@ -39,20 +52,87 @@ export type UvDecalEditorProps = {
   slotOptions: SlotOption[];
   selectedSlot: string | null;
   onSelectSlot: (slot: string) => void;
+  onSelectAssetId?: (assetId: string | null) => void;
   modelUrl: string | null;
   decalTextureUrl: string | null;
+  baseTextureOverrideUrl?: string | null;
   appliedDecals: readonly AppliedUvDecal[];
   draftUv: [number, number];
   scale: number;
   scaleX: number;
   scaleY: number;
   rotationDeg: number;
+  draftOpacity?: number;
+  draftBlendMode?: UvLayerBlendMode;
   onDraftUvChange: (uv: [number, number]) => void;
+  onDraftTextureUrlChange?: (url: string | null) => void;
+  onDraftOpacityChange?: (value: number) => void;
+  onDraftBlendModeChange?: (value: UvLayerBlendMode) => void;
+  draftAssetId?: string | null;
+  draftFileName?: string;
+  onDraftFileNameChange?: (fileName: string) => void;
+  onCreateGeneratedDecal?: (asset: {
+    fileName: string;
+    textureUrl: string;
+    textStyle?: TextDecalStyle | null;
+    designStyle?: DesignLayerStyle | null;
+    meshName?: string;
+    uv?: [number, number];
+    scale?: number;
+    scaleX?: number;
+    scaleY?: number;
+    rotationDeg?: number;
+    blendMode?: UvLayerBlendMode;
+    opacity?: number;
+    projection?: DecalProjectionBasis | null;
+  }) => {
+    assetId: string;
+    layerId: string | null;
+  } | null;
+  onCreateDecalLayer?: (layer: {
+    assetId?: string | null;
+    fileName?: string;
+    meshName: string;
+    uv: [number, number];
+    scale: number;
+    scaleX: number;
+    scaleY: number;
+    rotationDeg: number;
+    textureUrl: string;
+    blendMode?: UvLayerBlendMode;
+    opacity?: number;
+    textStyle?: TextDecalStyle | null;
+    designStyle?: DesignLayerStyle | null;
+    projection?: DecalProjectionBasis | null;
+  }) => string | null;
+  onBaseLayerPreviewChange?: (slot: string, textureUrl: string | null) => void;
+  onScaleChange?: (value: number) => void;
   onScaleXChange: (value: number) => void;
   onScaleYChange: (value: number) => void;
-  onApply: () => void;
+  onRotationDegChange?: (value: number) => void;
+  onApply: () => string | null | void;
   onReset: () => void;
   onClearApplied: () => void;
+  onRemoveAppliedLayer?: (layerId: string) => void;
+  onReplaceAppliedLayers?: (layers: readonly AppliedUvDecal[]) => void;
+  onUpdateAppliedLayer?: (
+    layerId: string,
+    patch: Partial<{
+      fileName: string;
+      textureUrl: string | null;
+      uv: [number, number];
+      scale: number;
+      scaleX: number;
+      scaleY: number;
+      rotationDeg: number;
+      blendMode: UvLayerBlendMode;
+      opacity: number;
+      textStyle: TextDecalStyle | null;
+      designStyle: DesignLayerStyle | null;
+    }>
+  ) => void;
+  onMoveAppliedLayer?: (layerId: string, direction: "up" | "down") => void;
+  onCloseRequested?: () => void;
   hasApplied: boolean;
 };
 
