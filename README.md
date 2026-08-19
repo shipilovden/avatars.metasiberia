@@ -1,15 +1,13 @@
-# Metasiberia Avatar Creator
+# METASIBERIA AVATARS CREATOR
+
+**Web-based 3D avatar creator and appearance editor for the Metasiberia ecosystem.**
+
+![Metasiberia Avatar Creator](docs/images/avatar-export.png)
 
 Short guide and examples for repository documentation.
 
 ## Images for README
 Place screenshots or example images in `docs/images` and reference them with relative paths in this README.
-
-Example:
-
-![Экспорт аватара — предпросмотр](docs/images/avatar-export.png)
-
-If you add `docs/images/avatar-export.png` and push, GitHub will render the image above.
 
 Notes:
 - Keep images reasonably small (web-friendly formats: PNG, JPG, or WebP).
