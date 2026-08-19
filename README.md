@@ -2,7 +2,7 @@
 
 **Web-based 3D avatar creator and appearance editor for the Metasiberia ecosystem.**
 
-![Metasiberia Avatar Creator](docs/images/avatar-export.png)
+![Metasiberia Avatar Creator](docs/images/About.png)
 
 Short guide and examples for repository documentation.
 
