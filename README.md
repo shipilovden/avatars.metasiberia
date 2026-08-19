@@ -2,7 +2,7 @@
 
 **Web-based 3D avatar creator and appearance editor for the Metasiberia ecosystem.**
 
-![Metasiberia Avatar Creator](docs/images/editor-overview.png)
+![Metasiberia Avatar Creator](docs/images/About.png)
 
 Short guide and examples for repository documentation.
 
@@ -19,7 +19,7 @@ Users can customize an avatar visually and work directly with the textures appli
 [**https://avatars.metasiberia.com/**](https://avatars.metasiberia.com/)
 
 <p align="center">
-	<img src="docs/images/About.png" alt="Metasiberia Avatars Creator interface" width="100%">
+	<img src="docs/images/editor-overview.png" alt="Metasiberia Avatars Creator interface" width="100%">
 </p>
 
 ## Features
