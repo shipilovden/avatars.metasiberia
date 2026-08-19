@@ -2,6 +2,8 @@
 
 **Web-based 3D avatar creator and appearance editor for the Metasiberia ecosystem.**
 
+![Metasiberia Avatar Creator](docs/images/About.png)
+
 ## About
 **Metasiberia Avatars Creator** is a browser-based editor for creating and customizing 3D avatars for the **Metasiberia** virtual environment.
 
@@ -23,43 +25,29 @@ Interactive avatar customization directly in the browser:
 
 - male and female avatar presets;
 - face selection;
-- hairstyles;
-- eyes and facial features;
-- head and face shape;
-- clothing and footwear;
-- eyebrows;
-- glasses and accessories;
-- masks and makeup;
-- real-time 3D preview;
-- lighting control;
-- avatar rotation and inspection.
 
-### Built-in UV & Texture Editor
-The editor includes an integrated texture and UV workflow:
+## Author
+**Denis Shipilov**
 
-- UV preview;
-- base texture editing;
-- layer-based workflow;
-- decals and custom graphics;
-- masks;
-- brush tools;
-- text on clothing;
-- opacity and blending controls;
-- real-time texture preview on the avatar.
-
-### Clothing & Appearance
-The editor contains a visual library of avatar elements, clothing, hairstyles, facial features, and accessories, allowing fast appearance customization directly in the browser.
-
-## Metasiberia Ecosystem
-**Metasiberia Avatars Creator** is part of the **Metasiberia** ecosystem — a set of interconnected tools for creating virtual environments, avatars, landscapes, and digital content.
-
-### Metasiberia
-Main virtual environment and core project.
-
-**Website:**
-[https://metasiberia.com/](https://metasiberia.com/)
+Creator and developer of **Metasiberia**, **Metasiberia Avatars Creator**, and **Metasiberia Terrain Generator**.
 
 **GitHub:**
+[https://github.com/shipilovden](https://github.com/shipilovden)
+
+**Telegram:**
+[https://t.me/denshipilov_metasiberia](https://t.me/denshipilov_metasiberia)
+
+**Twitter (X):**
+[https://twitter.com/denshipilovart](https://twitter.com/denshipilovart)
+
+**Metasiberia:**
+[https://metasiberia.com/](https://metasiberia.com/)
+
+---
+<p align="center">
+<strong>METASIBERIA</strong><br>
+Create identity. Create space. Create your virtual world.
+</p>
 [https://github.com/shipilovden/sub-metasiberia](https://github.com/shipilovden/sub-metasiberia)
 
 ### Metasiberia Avatars Creator
